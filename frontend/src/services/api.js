@@ -1,5 +1,5 @@
 const BASE = 'http://localhost:3001';
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 300000;
 
 async function request(method, path, body) {
   const controller = new AbortController();
@@ -34,6 +34,12 @@ export const connectToServer = (credentials) =>
 export const fetchEmails = (credentials, limit = 50) =>
   request('POST', '/api/fetch-emails', { ...credentials, limit });
 
+export const startFetchEmails = (credentials, limit = 50) =>
+  request('POST', '/api/fetch-emails', { ...credentials, limit });
+
+export const getFetchStatus = (jobId) =>
+  request('GET', `/api/fetch-status/${encodeURIComponent(jobId)}`);
+
 export const getEmails = (classification) => {
   const q =
     classification && classification !== 'all'
@@ -45,6 +51,17 @@ export const getEmails = (classification) => {
 export const clearEmails = () => request('DELETE', '/api/emails');
 
 export const getEmailById = (id) => request('GET', `/api/emails/${id}`);
+export const getEmailAttachments = (emailId) => request('GET', `/api/emails/${emailId}/attachments`);
+
+export const getAttachmentUrl = (id) => `${BASE}/api/attachments/${encodeURIComponent(id)}`;
+
+export async function downloadAttachment(id) {
+  const url = getAttachmentUrl(id);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  return blob;
+}
 
 export const getRules = () => request('GET', '/api/rules');
 

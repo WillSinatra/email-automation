@@ -78,4 +78,28 @@ try {
 		console.error('Failed to ensure emails.html column:', err && err.message);
 	}
 
+	// Ensure attachments table exists
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS attachments (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				email_id INTEGER,
+				filename TEXT,
+				content_type TEXT,
+				path TEXT,
+				created_at TEXT
+			)
+		`);
+	} catch (err) {
+		console.error('Failed to ensure attachments table:', err && err.message);
+	}
+
+	// Ensure attachments directory exists
+	try {
+		const attachDir = path.join(__dirname, 'attachments');
+		if (!fs.existsSync(attachDir)) fs.mkdirSync(attachDir);
+	} catch (err) {
+		console.error('Failed to ensure attachments directory:', err && err.message);
+	}
+
 module.exports = db;

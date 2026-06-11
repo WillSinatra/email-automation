@@ -11,8 +11,12 @@ function formatDate(iso) {
   });
 }
 
-export default function EmailTable({ emails, loading, onRowClick }) {
-  if (loading) {
+export default function EmailTable({ emails, loading, fetchStarted, filterClass, onRowClick }) {
+  // Show the loading state only when a fetch is active AND there are no emails yet.
+  // Exception: when the user selected the `ignored` filter, we should not show a persistent
+  // "Loading emails…" because ignored messages are intentionally not stored. In that case
+  // show the empty-state message instead.
+  if (fetchStarted && (!emails || emails.length === 0) && filterClass !== 'ignored') {
     return (
       <div className="email-table-wrapper">
         <p className="empty-state">Loading emails…</p>
