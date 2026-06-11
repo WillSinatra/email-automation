@@ -1,3 +1,22 @@
+# Email Automation
+
+Instrucciones rápidas para levantar y detener el servidor en Windows.
+
+Si no tienes Node instalado, puedes ejecutar el script PowerShell para iniciar el backend y frontend (usa la ruta correcta en tu equipo):
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File "C:\Users\su-usuario\Desktop\automatizacion correos\start-local.ps1"
+```
+
+Para detener los procesos que escuchan en los puertos `3001` (backend) y `5173` (frontend), ejecuta:
+
+```powershell
+Get-NetTCPConnection -LocalPort 3001,5173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force; Write-Host "Detenido PID $($_.OwningProcess) en puerto $($_.LocalPort)" }
+```
+
+Notas:
+- Ajusta la ruta del script `start-local.ps1` si tu carpeta está en otra ubicación.
+- Si tienes Node instalado, puedes instalar dependencias y ejecutar los servicios manualmente desde las carpetas `backend` y `frontend`.
 # Manual de uso - Herramienta local de automatizacion de correos
 
 ## Nota de inicio y stop rapido (script raiz)
