@@ -17,6 +17,27 @@ const TRUSTED_SUFFIXES = [
   "me.com",
 ];
 
+// Exact ignored email addresses (lowercased)
+const IGNORED_EMAILS = [
+  "no-reply@accounts.google.com",
+  "noreply@accounts.google.com",
+  "notifications@linkedin.com",
+  "no-reply@linkedin.com",
+  "noreply@github.com",
+  "no-reply@github.com",
+  "noreply@twitter.com",
+  "notify@twitter.com",
+  "noreply@instagram.com",
+  "no-reply@instagram.com",
+  "noreply@facebook.com",
+  "notification@facebookmail.com",
+  "no-reply@youtube.com",
+  "noreply@youtube.com",
+  "no-reply@netflix.com",
+  "info@newsletter.mercadolibre.com",
+  "noreply@mercadolibre.com",
+].map((s) => s.toLowerCase());
+
 function isTrustedDomain(domain) {
   const normalized = String(domain || "").toLowerCase().trim();
   if (!normalized) return false;
@@ -39,6 +60,48 @@ function extractSenderDomain(emailAddress) {
   return cleaned.toLowerCase().trim().replace(/^<|>$/g, "");
 }
 
+function extractLocalPart(emailAddress) {
+  const cleaned = String(emailAddress || '').trim();
+  const emailMatch = cleaned.match(/([A-Z0-9._%+-]+)@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (emailMatch) return (emailMatch[1] || '').toLowerCase();
+  // If the input looks like a plain local-part or <local-part>
+  const m2 = cleaned.match(/^<?([A-Z0-9._%+-]+)>?$/i);
+  if (m2) return (m2[1] || '').toLowerCase();
+  return '';
+}
+
+// Heuristics for ignoring automated senders, mailing lists and tracking domains.
+const IGNORE_LOCAL_PREFIXES = [
+  'no-reply', 'noreply', 'donotreply', 'do-not-reply', 'no.reply', 'mailer-daemon', 'mailer', 'postmaster', 'bounce', 'unsubscribe'
+];
+const IGNORE_LOCAL_PATTERNS = [
+  /list/i,
+  /owner/i,
+  /-request$/i,
+  /request/i
+];
+const IGNORE_DOMAIN_KEYWORDS = [
+  'mailchimp', 'sendgrid', 'amazonses', 'mailgun', 'list-manage', 'campaign', 'newsletter', 'ads', 'advert', 'tracking', 'track', 'bounce', 'bouncehandler'
+];
+
+function isIgnoredSender(emailAddress) {
+  const local = extractLocalPart(emailAddress);
+  const domain = extractSenderDomain(emailAddress);
+  if (!local && !domain) return false;
+
+  const l = String(local || '').toLowerCase();
+  for (const p of IGNORE_LOCAL_PREFIXES) if (l.startsWith(p)) return true;
+  for (const rx of IGNORE_LOCAL_PATTERNS) if (rx.test(l)) return true;
+
+  const d = String(domain || '').toLowerCase();
+  for (const kw of IGNORE_DOMAIN_KEYWORDS) if (d.includes(kw)) return true;
+
+  // domains commonly used for mailing lists: subdomain 'lists.' or containing 'lists'
+  if (d.startsWith('lists.') || d.includes('.lists.') || d.includes('lists.')) return true;
+
+  return false;
+}
+
 /**
  * Classify an email sender domain.
  *
@@ -52,15 +115,27 @@ function extractSenderDomain(emailAddress) {
  * @returns {"trusted"|"spam"|"ignored"}
  */
 function classify_sender(emailAddress, rulesFromDB) {
-  const domain = extractSenderDomain(emailAddress);
-  const rules = Array.isArray(rulesFromDB) ? rulesFromDB : [];
+  const raw = String(emailAddress || '').trim();
+  // extract full email if present
+  const emailMatch = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const fullEmail = emailMatch ? emailMatch[0].toLowerCase() : null;
 
-  if (!domain) return "spam";
+  // determine domain
+  let domain = '';
+  if (fullEmail) domain = fullEmail.split('@')[1];
+  else if (raw && raw.indexOf('@') === -1 && raw.includes('.')) domain = raw.toLowerCase();
+  else domain = '';
 
-  const customRule = rules.find((rule) => String(rule?.domain || "").toLowerCase().trim() === domain);
-  if (customRule) return customRule.category || "spam";
+  if (!domain) return 'spam';
 
-  return isTrustedDomain(domain) ? "trusted" : "spam";
+  // 1) exact email ignored
+  if (fullEmail && IGNORED_EMAILS.includes(fullEmail)) return 'ignored';
+
+  // 2) trusted domain
+  if (isTrustedDomain(domain)) return 'trusted';
+
+  // 3) fallback
+  return 'spam';
 }
 
 function classifyEmail(senderDomain, rulesFromDB) {
