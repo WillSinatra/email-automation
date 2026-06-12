@@ -43,68 +43,6 @@ function decodeQuotedPrintableToBuffer(input) {
   return Buffer.from(bytes);
 }
 
-function countEncodingArtifactsLegacy(value) {
-  const text = String(value || '');
-  const matches = text.match(/\uFFFD|Ã.|Â.|â€|â€“|â€”|â€œ|â€\u009d|â€˜|â€™/g);
-  return matches ? matches.length : 0;
-}
-
-function repairUtf8MojibakeLegacy(value) {
-  const text = String(value || '');
-  if (!/[ÃÂâ]\S?/.test(text)) return text;
-
-  try {
-    const repaired = Buffer.from(text, 'latin1').toString('utf8');
-    if (countEncodingArtifactsLegacy(repaired) < countEncodingArtifactsLegacy(text)) {
-      return repaired;
-    }
-  } catch (_) {}
-
-  return text;
-}
-
-function decodeHtmlEntities(value) {
-  if (!value) return '';
-
-  const named = {
-    amp: '&',
-    lt: '<',
-    gt: '>',
-    quot: '"',
-    apos: "'",
-    nbsp: ' ',
-    aacute: 'á',
-    eacute: 'é',
-    iacute: 'í',
-    oacute: 'ó',
-    uacute: 'ú',
-    Aacute: 'Á',
-    Eacute: 'É',
-    Iacute: 'Í',
-    Oacute: 'Ó',
-    Uacute: 'Ú',
-    ntilde: 'ñ',
-    Ntilde: 'Ñ',
-    uuml: 'ü',
-    Uuml: 'Ü',
-    deg: '°',
-    ordm: 'º',
-  };
-
-  return String(value)
-    .replace(/&=\r?\n\s*([a-zA-Z][a-zA-Z0-9]+);/g, '&$1;')
-    .replace(/&=,?\s*([a-zA-Z][a-zA-Z0-9]+);?/g, '&$1;')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCodePoint(parseInt(n, 16)))
-    .replace(/&([a-zA-Z][a-zA-Z0-9]+);/g, (match, name) => (
-      Object.prototype.hasOwnProperty.call(named, name) ? named[name] : match
-    ));
-}
-
-function normalizeEmailText(value) {
-  return decodeHtmlEntities(repairUtf8Mojibake(value));
-}
-
 function countEncodingArtifacts(value) {
   const text = String(value || '');
   const matches = text.match(/\uFFFD|\u00c3.|\u00c2.|\u00e2\u20ac|\u00e2\u0080/g);
