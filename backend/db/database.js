@@ -25,7 +25,6 @@ try {
 		const samples = [
 			["mycompany.com", "trusted"],
 			["gmail.com", "trusted"],
-			["accounts.google.com", "trusted"],
 			["yahoo.com", "trusted"],
 			["outlook.com", "trusted"],
 			["newsletter.example.com", "ignored"],
@@ -77,6 +76,17 @@ try {
 	} catch (err) {
 		console.error('Failed to ensure emails.html column:', err && err.message);
 	}
+
+// Ensure `is_read` column exists to track read state of emails (0/1).
+try {
+	const info4 = db.prepare("PRAGMA table_info(emails)").all();
+	const hasIsRead = info4.some((c) => c.name === "is_read");
+	if (!hasIsRead) {
+		db.exec("ALTER TABLE emails ADD COLUMN is_read INTEGER DEFAULT 0");
+	}
+} catch (err) {
+	console.error('Failed to ensure emails.is_read column:', err && err.message);
+}
 
 	// Ensure attachments table exists
 	try {

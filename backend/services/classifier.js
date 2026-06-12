@@ -5,7 +5,6 @@
 const TRUSTED_SUFFIXES = [
   "gmail.com",
   "google.com",
-  "accounts.google.com",
   "googlemail.com",
   "hotmail.com",
   "hotmail.com.ar",

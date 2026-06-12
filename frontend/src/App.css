@@ -23,6 +23,10 @@
   --ign-bg: rgba(108, 117, 135, 0.15);
   --ign-bd: rgba(108, 117, 135, 0.3);
 
+  --read:       #e3b341;
+  --read-bg:    rgba(227, 179, 65, 0.1);
+  --read-bd:    rgba(227, 179, 65, 0.25);
+
   --r: 7px;
   --t: 0.14s ease;
 }
@@ -259,6 +263,12 @@ strong { font-weight: 600; }
 .badge-trusted { color: var(--trusted); background: var(--trusted-bg); border: 1px solid var(--trusted-bd); }
 .badge-spam    { color: var(--spam);    background: var(--spam-bg);    border: 1px solid var(--spam-bd); }
 .badge-ignored { color: var(--ign);     background: var(--ign-bg);     border: 1px solid var(--ign-bd); }
+.badge-read    { color: var(--read);    background: var(--read-bg);    border: 1px solid var(--read-bd); }
+.badge-ventas {
+  background: rgba(67, 180, 100, 0.12);
+  color: #43b464;
+  border: 1px solid rgba(67, 180, 100, 0.35);
+}
 
 /* ===== RULES PANEL ===== */
 .rules-panel {

@@ -1,8 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { fetchEmails, startFetchEmails, getFetchStatus, getEmails, clearEmails, getEmailById, getEmailAttachments, getAttachmentUrl, downloadAttachment } from '../services/api';
+import { fetchEmails, getFetchStatus, getEmails, clearEmails, getEmailById, getEmailAttachments, getAttachmentUrl, downloadAttachment } from '../services/api';
 import FilterBar from '../components/FilterBar';
 import EmailTable from '../components/EmailTable';
 import RulesPanel from '../components/RulesPanel';
+import Swal from 'sweetalert2';
+import withReactContent from 'sweetalert2-react-content';
+
+const MySwal = withReactContent(Swal);
 
 export default function DashboardPage({ credentials, onDisconnect }) {
   // Full email list loaded from the database
@@ -13,7 +17,7 @@ export default function DashboardPage({ credentials, onDisconnect }) {
   const [filterClass, setFilterClass] = useState('all');
   const [filterDomain, setFilterDomain] = useState('');
   const [filterMonth, setFilterMonth] = useState('');
-  const [filterYear, setFilterYear] = useState('');
+  const [filterYear, setFilterYear] = useState('2026');
 
   // Fetch emails from IMAP action
   const [fetchLoading, setFetchLoading] = useState(false);
@@ -30,6 +34,26 @@ export default function DashboardPage({ credentials, onDisconnect }) {
   const [clearLoading, setClearLoading] = useState(false);
   const [clearError, setClearError] = useState(null);
 
+  // Read emails state
+  const [readEmailIds, setReadEmailIds] = useState(() => {
+    try {
+      const stored = localStorage.getItem('readEmailIds');
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch (e) {
+      return new Set();
+    }
+  });
+
+  const loadingRef = useRef(false);
+
+  const dateRangeText = useMemo(() => {
+    const now = new Date();
+    const minDate = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+    const maxDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const formatOpts = { month: 'long', year: 'numeric' };
+    return `Showing emails from ${minDate.toLocaleDateString('en-US', formatOpts)} – ${maxDate.toLocaleDateString('en-US', formatOpts)}`;
+  }, []);
+
   // Load stored emails on mount
   useEffect(() => {
     loadEmails();
@@ -42,6 +66,8 @@ export default function DashboardPage({ credentials, onDisconnect }) {
   }, []);
 
   async function loadEmails() {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setEmailsLoading(true);
     try {
       // Always load all emails; filters are applied client-side
@@ -50,6 +76,7 @@ export default function DashboardPage({ credentials, onDisconnect }) {
       // Fail silently — table will show empty state
     } finally {
       setEmailsLoading(false);
+      loadingRef.current = false;
     }
   }
 
@@ -58,7 +85,11 @@ export default function DashboardPage({ credentials, onDisconnect }) {
     setFetchError(null);
     setFetchProgress({ fetched: 0, limit: 0, status: 'starting' });
     try {
-      const resp = await startFetchEmails(credentials, 1500);
+      const fetchPromise = fetchEmails(credentials, 1500);
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Fetch timed out. Try again.')), 30000)
+      );
+      const resp = await Promise.race([fetchPromise, timeoutPromise]);
       const jobId = resp.jobId;
       setFetchJobId(jobId);
       // poll status
@@ -71,8 +102,8 @@ export default function DashboardPage({ credentials, onDisconnect }) {
           const fetched = st.fetched || 0;
           if (fetched > prev) {
             prevFetchedRef.current = fetched;
-            // avoid concurrent loads
-            if (!emailsLoading) await loadEmails();
+            // Trigger load without waiting, avoiding stale closures
+            loadEmails();
           }
 
           if (st.status === 'done' || st.status === 'failed') {
@@ -129,24 +160,111 @@ export default function DashboardPage({ credentials, onDisconnect }) {
   }
 
   async function openEmail(id) {
-    setSelectedLoading(true);
-    setSelectedEmail(null);
-    setSelectedEmailId(id);
+    // Mark as read
+    setReadEmailIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      localStorage.setItem('readEmailIds', JSON.stringify([...next]));
+      return next;
+    });
+
+    // Show loading alert
+    MySwal.fire({
+      title: 'Loading email...',
+      didOpen: () => {
+        MySwal.showLoading();
+      },
+      allowOutsideClick: false,
+      showConfirmButton: false
+    });
+
     try {
       const data = await getEmailById(id);
       const atts = await getEmailAttachments(id).catch(() => []);
       data.attachments = atts || [];
-      setSelectedEmail(data);
+      
+      // Update alert with email content
+      MySwal.fire({
+        title: data.subject || 'No Subject',
+        html: (
+          <div className="gmail-viewer-swal" style={{ textAlign: 'left', fontSize: '0.95rem' }}>
+            <div className="gmail-meta" style={{ marginBottom: '15px', borderBottom: '1px solid #ddd', paddingBottom: '10px' }}>
+              <div className="gmail-from"><strong>From:</strong> {data.raw_sender || data.sender || '—'}</div>
+              <div className="gmail-date"><strong>Date:</strong> {data.date ? new Date(data.date).toLocaleString() : ''}</div>
+            </div>
+            <div className="gmail-body" style={{ maxHeight: '55vh', overflowY: 'auto', paddingRight: '5px' }}>
+              {data.html ? (
+                <div className="email-html" dangerouslySetInnerHTML={{ __html: sanitizeHtml(data.html || '') }} />
+              ) : (
+                <pre className="email-body" style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{data.text || '(No body stored)'}</pre>
+              )}
+
+              {data.attachments && data.attachments.length > 0 && (
+                <div className="attachments" style={{ marginTop: '20px', borderTop: '1px solid #ddd', paddingTop: '15px' }}>
+                  <h4 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>Attachments</h4>
+                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                    {data.attachments.map((a) => {
+                      const ct = (a.content_type || '').toLowerCase();
+                      const inlineTypes = ['application/pdf', 'image/png', 'image/jpg', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml', 'image/bmp', 'image/tiff'];
+                      const isInline = inlineTypes.includes(ct) || ct.startsWith('image/');
+                      return (
+                        <li key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', padding: '8px', background: '#f8f9fa', borderRadius: '4px', border: '1px solid #e9ecef' }}>
+                          <strong style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.filename}</strong>
+                          {isInline ? (
+                            <a className="btn btn-sm btn-secondary" href={getAttachmentUrl(a.id)} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+                              View
+                            </a>
+                          ) : (
+                            <button
+                              className="btn btn-sm btn-primary"
+                              style={{ cursor: 'pointer' }}
+                              onClick={async (e) => {
+                                e.preventDefault();
+                                try {
+                                  const blob = await downloadAttachment(a.id);
+                                  const url = URL.createObjectURL(blob);
+                                  const link = document.createElement('a');
+                                  link.href = url;
+                                  link.download = a.filename || 'attachment';
+                                  document.body.appendChild(link);
+                                  link.click();
+                                  link.remove();
+                                  setTimeout(() => URL.revokeObjectURL(url), 60000);
+                                } catch (err) {
+                                  MySwal.fire('Download failed', err && err.message ? err.message : String(err), 'error');
+                                }
+                              }}
+                            >
+                              Download
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        ),
+        width: '850px',
+        showCloseButton: true,
+        showConfirmButton: false,
+        customClass: {
+          popup: 'gmail-swal-popup'
+        }
+      });
     } catch (err) {
-      setSelectedEmail({ error: err.message });
-    } finally {
-      setSelectedLoading(false);
+      MySwal.fire({
+        icon: 'error',
+        title: 'Error Loading Email',
+        text: err.message
+      });
     }
   }
 
   function closeEmail() {
-    setSelectedEmailId(null);
-    setSelectedEmail(null);
+    // Left for compatibility if any other effect relies on it.
   }
 
   function sanitizeHtml(dirty) {
@@ -183,7 +301,7 @@ export default function DashboardPage({ credentials, onDisconnect }) {
       const normalizedDomainFilter = filterDomain.trim().toLowerCase();
       // keyword-based detectors for new filters
       const adminKeywords = ['factura', 'facturación', 'pago', 'pagos', 'recibo', 'cuenta', 'administracion', 'administración', 'tesoreria', 'tesorería', 'finanzas', 'cobro'];
-      const reclamosKeywords = ['reclamo', 'reclamos', 'incidencia', 'queja', 'problema', 'soporte', 'reporte', 'reparacion', 'garantia'];
+      const soporteKeywords = ['reclamo', 'reclamos', 'incidencia', 'queja', 'problema', 'soporte', 'reporte', 'reparacion', 'garantia'];
 
       function textForMatch(email) {
         const parts = [email.subject, email.sender, email.raw_sender, email.domain, email.text];
@@ -198,10 +316,12 @@ export default function DashboardPage({ credentials, onDisconnect }) {
       return emails.filter((e) => {
         // handle classification-like filters
         if (filterClass !== 'all') {
-          if (filterClass === 'administracion') {
+          if (filterClass === 'read') {
+            if (!readEmailIds.has(e.id)) return false;
+          } else if (filterClass === 'administracion') {
             if (!matchesKeywords(e, adminKeywords)) return false;
-          } else if (filterClass === 'reclamos') {
-            if (!matchesKeywords(e, reclamosKeywords)) return false;
+          } else if (filterClass === 'soporte_tecnico') {
+            if (!matchesKeywords(e, soporteKeywords)) return false;
           } else {
             if (e.classification !== filterClass) return false;
           }
@@ -232,7 +352,7 @@ export default function DashboardPage({ credentials, onDisconnect }) {
         return true;
       });
     },
-    [emails, filterClass, filterDomain, filterMonth, filterYear]
+    [emails, filterClass, filterDomain, filterMonth, filterYear, readEmailIds]
   );
 
   const sortedEmails = useMemo(() => {
@@ -263,8 +383,11 @@ export default function DashboardPage({ credentials, onDisconnect }) {
       const aTime = a.date ? new Date(a.date).getTime() : 0;
       const bTime = b.date ? new Date(b.date).getTime() : 0;
       return bTime - aTime;
-    });
-  }, [filteredEmails]);
+    }).map(e => ({
+      ...e,
+      isRead: readEmailIds.has(e.id)
+    }));
+  }, [filteredEmails, readEmailIds]);
 
   return (
     <div className="dashboard">
@@ -322,94 +445,12 @@ export default function DashboardPage({ credentials, onDisconnect }) {
           clearLoading={clearLoading}
           clearError={clearError}
         />
+        <div className="date-range-info" style={{ marginTop: '-10px', marginBottom: '15px', color: 'var(--muted)', fontSize: '0.9rem' }}>
+          {dateRangeText}
+        </div>
 
         {/* Section 3: Email table */}
           <EmailTable emails={sortedEmails} loading={emailsLoading} fetchStarted={fetchLoading || !!fetchJobId} filterClass={filterClass} onRowClick={openEmail} />
-
-        {/* Email viewer modal */}
-        {selectedEmailId && (
-          <div className="modal-overlay" onClick={closeEmail}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
-                  <div className="gmail-viewer">
-                    <div className="gmail-header">
-                      <div className="gmail-subject">{selectedEmail ? selectedEmail.subject : 'Loading…'}</div>
-                      <button className="gmail-close" onClick={closeEmail} aria-label="Close">×</button>
-                    </div>
-                    <div className="gmail-meta">
-                      <div className="gmail-from">From: {selectedEmail?.raw_sender || selectedEmail?.sender || '—'}</div>
-                      <div className="gmail-date">{selectedEmail?.date ? new Date(selectedEmail.date).toLocaleString() : ''}</div>
-                    </div>
-                    <div className="gmail-body">
-                      {selectedLoading && <p>Loading email…</p>}
-                      {selectedEmail && selectedEmail.error && (
-                        <p className="error-msg">{selectedEmail.error}</p>
-                      )}
-                      {selectedEmail && !selectedEmail.error && (
-                        <div>
-                          {selectedEmail.html ? (
-                            <div className="email-html" dangerouslySetInnerHTML={{ __html: sanitizeHtml(selectedEmail.html || '') }} />
-                          ) : (
-                            <pre className="email-body">{selectedEmail.text || '(No body stored)'}</pre>
-                          )}
-
-                          {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
-                            <div className="attachments">
-                              <h4>Attachments</h4>
-                              <ul>
-                                {selectedEmail.attachments.map((a) => {
-                                  const ct = (a.content_type || '').toLowerCase();
-                                  const inlineTypes = ['application/pdf', 'image/png', 'image/jpg', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml', 'image/bmp', 'image/tiff'];
-                                  const isInline = inlineTypes.includes(ct) || ct.startsWith('image/');
-                                  return (
-                                    <li key={a.id}>
-                                      <strong>{a.filename}</strong> — {a.content_type} {' '}
-                                      {isInline ? (
-                                        <a className="btn btn-sm btn-secondary" href={getAttachmentUrl(a.id)} target="_blank" rel="noopener noreferrer">
-                                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" style={{verticalAlign:'middle', marginRight:6}} aria-hidden>
-                                            <path fill="currentColor" d="M12 5c-1.1 0-2 .9-2 2v6H7l5 5 5-5h-3V7c0-1.1-.9-2-2-2z"/>
-                                          </svg>
-                                          View
-                                        </a>
-                                      ) : (
-                                        <a
-                                          className="btn btn-sm btn-primary"
-                                          href={getAttachmentUrl(a.id)}
-                                          onClick={async (e) => {
-                                            e.preventDefault();
-                                            try {
-                                              const blob = await downloadAttachment(a.id);
-                                              const url = URL.createObjectURL(blob);
-                                              const link = document.createElement('a');
-                                              link.href = url;
-                                              link.download = a.filename || 'attachment';
-                                              document.body.appendChild(link);
-                                              link.click();
-                                              link.remove();
-                                              setTimeout(() => URL.revokeObjectURL(url), 60000);
-                                            } catch (err) {
-                                              alert('Download failed: ' + (err && err.message ? err.message : String(err)));
-                                            }
-                                          }}
-                                        >
-                                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" style={{verticalAlign:'middle', marginRight:6}} aria-hidden>
-                                            <path fill="currentColor" d="M5 20h14v-2H5v2zm7-18L5.33 9h3.67v6h6V9h3.67L12 2z"/>
-                                          </svg>
-                                          Download
-                                        </a>
-                                      )}
-                                    </li>
-                                  );
-                                })}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-          </div>
-        )}
 
         {/* Section 4: Collapsible rules panel */}
         <RulesPanel />

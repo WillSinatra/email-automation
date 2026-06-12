@@ -1,4 +1,4 @@
-const CLASSES = ['all', 'trusted', 'spam', 'ignored', 'administracion', 'reclamos'];
+const CLASSES = ['all', 'trusted', 'spam', 'ignored', 'ventas', 'administracion', 'soporte_tecnico', 'read'];
 
 export default function FilterBar({
   filterClass,
@@ -32,7 +32,12 @@ export default function FilterBar({
                   checked={filterClass === c}
                   onChange={() => onClassChange(c)}
                 />
-                {c.charAt(0).toUpperCase() + c.slice(1)}
+                {(() => {
+                  if (c === 'soporte_tecnico') return 'Soporte Técnico';
+                  if (c === 'administracion') return 'Administración';
+                  if (c === 'ventas') return 'Ventas';
+                  return c.charAt(0).toUpperCase() + c.slice(1);
+                })()}
               </label>
             ))}
           </div>
@@ -56,28 +61,12 @@ export default function FilterBar({
           <span className="filter-label">Date:</span>
           <select value={filterMonth || ''} onChange={(e) => onMonthChange(e.target.value)} className="input input-sm" style={{width:110}}>
             <option value="">All months</option>
-            <option value="1">Jan</option>
-            <option value="2">Feb</option>
-            <option value="3">Mar</option>
             <option value="4">Apr</option>
             <option value="5">May</option>
             <option value="6">Jun</option>
-            <option value="7">Jul</option>
-            <option value="8">Aug</option>
-            <option value="9">Sep</option>
-            <option value="10">Oct</option>
-            <option value="11">Nov</option>
-            <option value="12">Dec</option>
           </select>
-          <select value={filterYear || ''} onChange={(e) => onYearChange(e.target.value)} className="input input-sm" style={{width:110, marginLeft:8}}>
-            <option value="">All years</option>
-            {(() => {
-              // Use UTC year to match stored email dates (stored as ISO UTC)
-              const cur = new Date().getUTCFullYear();
-              const years = [];
-              for (let y = cur; y >= cur - 10; y--) years.push(y);
-              return years.map((y) => <option key={y} value={String(y)}>{y}</option>);
-            })()}
+          <select value={filterYear || '2026'} onChange={(e) => onYearChange(e.target.value)} className="input input-sm" style={{width:110, marginLeft:8}}>
+            <option value="2026">2026</option>
           </select>
         </div>
 
