@@ -43,22 +43,157 @@ function decodeQuotedPrintableToBuffer(input) {
   return Buffer.from(bytes);
 }
 
+function countEncodingArtifactsLegacy(value) {
+  const text = String(value || '');
+  const matches = text.match(/\uFFFD|Ã.|Â.|â€|â€“|â€”|â€œ|â€\u009d|â€˜|â€™/g);
+  return matches ? matches.length : 0;
+}
+
+function repairUtf8MojibakeLegacy(value) {
+  const text = String(value || '');
+  if (!/[ÃÂâ]\S?/.test(text)) return text;
+
+  try {
+    const repaired = Buffer.from(text, 'latin1').toString('utf8');
+    if (countEncodingArtifactsLegacy(repaired) < countEncodingArtifactsLegacy(text)) {
+      return repaired;
+    }
+  } catch (_) {}
+
+  return text;
+}
+
+function decodeHtmlEntities(value) {
+  if (!value) return '';
+
+  const named = {
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+    nbsp: ' ',
+    aacute: 'á',
+    eacute: 'é',
+    iacute: 'í',
+    oacute: 'ó',
+    uacute: 'ú',
+    Aacute: 'Á',
+    Eacute: 'É',
+    Iacute: 'Í',
+    Oacute: 'Ó',
+    Uacute: 'Ú',
+    ntilde: 'ñ',
+    Ntilde: 'Ñ',
+    uuml: 'ü',
+    Uuml: 'Ü',
+    deg: '°',
+    ordm: 'º',
+  };
+
+  return String(value)
+    .replace(/&=\r?\n\s*([a-zA-Z][a-zA-Z0-9]+);/g, '&$1;')
+    .replace(/&=,?\s*([a-zA-Z][a-zA-Z0-9]+);?/g, '&$1;')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&([a-zA-Z][a-zA-Z0-9]+);/g, (match, name) => (
+      Object.prototype.hasOwnProperty.call(named, name) ? named[name] : match
+    ));
+}
+
+function normalizeEmailText(value) {
+  return decodeHtmlEntities(repairUtf8Mojibake(value));
+}
+
+function countEncodingArtifacts(value) {
+  const text = String(value || '');
+  const matches = text.match(/\uFFFD|\u00c3.|\u00c2.|\u00e2\u20ac|\u00e2\u0080/g);
+  return matches ? matches.length : 0;
+}
+
+function repairUtf8Mojibake(value) {
+  let text = String(value || '');
+  if (!/[\u00c3\u00c2\u00e2]/.test(text)) return text;
+
+  for (let i = 0; i < 3; i++) {
+    try {
+      const repaired = Buffer.from(text, 'latin1').toString('utf8');
+      if (countEncodingArtifacts(repaired) >= countEncodingArtifacts(text)) break;
+      text = repaired;
+    } catch (_) {
+      break;
+    }
+  }
+
+  return text;
+}
+
+function decodeHtmlEntitiesSafe(value) {
+  if (!value) return '';
+
+  const named = {
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+    nbsp: ' ',
+    aacute: '\u00e1',
+    eacute: '\u00e9',
+    iacute: '\u00ed',
+    oacute: '\u00f3',
+    uacute: '\u00fa',
+    Aacute: '\u00c1',
+    Eacute: '\u00c9',
+    Iacute: '\u00cd',
+    Oacute: '\u00d3',
+    Uacute: '\u00da',
+    ntilde: '\u00f1',
+    Ntilde: '\u00d1',
+    uuml: '\u00fc',
+    Uuml: '\u00dc',
+    deg: '\u00b0',
+    ordm: '\u00ba',
+  };
+
+  return String(value)
+    .replace(/&=\r?\n\s*([a-zA-Z][a-zA-Z0-9]+);/g, '&$1;')
+    .replace(/&=,?\s*([a-zA-Z][a-zA-Z0-9]+);?/g, '&$1;')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&([a-zA-Z][a-zA-Z0-9]+);/g, (match, name) => (
+      Object.prototype.hasOwnProperty.call(named, name) ? named[name] : match
+    ));
+}
+
+function normalizeEmailTextSafe(value) {
+  return decodeHtmlEntitiesSafe(repairUtf8Mojibake(value));
+}
+
+function omitSpanishAccents(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function normalizeStoredEmailText(value) {
+  return omitSpanishAccents(normalizeEmailTextSafe(value));
+}
+
 function decodeBufferWithCharset(buf, charset) {
   try {
     const cs = charset ? String(charset).toLowerCase().replace(/^["']|["']$/g, '') : 'utf8';
     if (cs === 'utf8' || cs === 'utf-8') {
       const decoded = iconv.decode(buf, 'utf8');
-      if (decoded.includes('')) return iconv.decode(buf, 'windows-1252');
-      return decoded;
+      if (decoded.includes('\uFFFD')) return normalizeEmailTextSafe(iconv.decode(buf, 'windows-1252'));
+      return normalizeEmailTextSafe(decoded);
     }
-    if (iconv.encodingExists(cs)) return iconv.decode(buf, cs);
+    if (iconv.encodingExists(cs)) return normalizeEmailTextSafe(iconv.decode(buf, cs));
     
     // fallback for unknown charsets
     const fallbackDecoded = iconv.decode(buf, 'utf8');
-    if (fallbackDecoded.includes('')) return iconv.decode(buf, 'windows-1252');
-    return fallbackDecoded;
+    if (fallbackDecoded.includes('\uFFFD')) return normalizeEmailTextSafe(iconv.decode(buf, 'windows-1252'));
+    return normalizeEmailTextSafe(fallbackDecoded);
   } catch (e) {
-    return buf.toString('utf8');
+    return normalizeEmailTextSafe(buf.toString('utf8'));
   }
 }
 
@@ -69,11 +204,7 @@ function stripHtml(html) {
   t = t.replace(/<script[\s\S]*?<\/script>/gi, '');
   t = t.replace(/<style[\s\S]*?<\/style>/gi, '');
   t = t.replace(/<[^>]+>/g, '');
-  // Unescape basic HTML entities
-  t = t.replace(/&nbsp;/gi, ' ');
-  t = t.replace(/&amp;/gi, '&');
-  t = t.replace(/&lt;/gi, '<');
-  t = t.replace(/&gt;/gi, '>');
+  t = decodeHtmlEntitiesSafe(t);
   return t.trim();
 }
 
@@ -225,6 +356,44 @@ const selectAllRulesStmt = db.prepare(
   "SELECT domain, category FROM rules"
 );
 
+function cleanStoredEmailRows() {
+  const rows = db.prepare(`
+    SELECT id, subject, raw_sender, text, html
+    FROM emails
+  `).all();
+
+  if (!rows || !rows.length) return 0;
+
+  const updateStmt = db.prepare(`
+    UPDATE emails
+    SET subject = ?, raw_sender = ?, text = ?, html = ?
+    WHERE id = ?
+  `);
+
+  let changed = 0;
+  const tx = db.transaction((items) => {
+    for (const row of items) {
+      const subject = normalizeStoredEmailText(row.subject);
+      const rawSender = normalizeStoredEmailText(row.raw_sender);
+      const text = normalizeStoredEmailText(row.text);
+      const html = normalizeStoredEmailText(row.html);
+
+      if (
+        subject !== (row.subject || '') ||
+        rawSender !== (row.raw_sender || '') ||
+        text !== (row.text || '') ||
+        html !== (row.html || '')
+      ) {
+        updateStmt.run(subject, rawSender, text, html, row.id);
+        changed++;
+      }
+    }
+  });
+
+  tx(rows);
+  return changed;
+}
+
 // Backfill any existing rows that have a body but no extracted text/html yet.
 try {
   const missing = db.prepare("SELECT id, body FROM emails WHERE (text IS NULL OR html IS NULL) AND body IS NOT NULL").all();
@@ -234,7 +403,7 @@ try {
       for (const r of rows) {
         try {
           const parts = extractMessageParts(r.body);
-          updateText.run(parts.text || '', parts.html || '', r.id);
+          updateText.run(normalizeStoredEmailText(parts.text), normalizeStoredEmailText(parts.html), r.id);
         } catch (_) {
           updateText.run('', '', r.id);
         }
@@ -246,9 +415,16 @@ try {
   console.error('Backfill text/html failed:', err && err.message);
 }
 
+try {
+  const changed = cleanStoredEmailRows();
+  if (changed) console.log(`[emails] normalized stored rows=${changed}`);
+} catch (err) {
+  console.error('Stored email normalization failed:', err && err.message);
+}
+
 function extractSenderInfo(envelope) {
   const firstFrom = envelope?.from?.[0];
-  const name = firstFrom?.name || "";
+  const name = normalizeStoredEmailText(firstFrom?.name || "");
 
   // ImapFlow exposes the full address string in `address`.
   // Fall back to the legacy mailbox+host fields if present (older parsers).
@@ -257,7 +433,7 @@ function extractSenderInfo(envelope) {
     (firstFrom?.mailbox && firstFrom?.host
       ? `${firstFrom.mailbox}@${firstFrom.host}`
       : "");
-  sender = String(sender).trim();
+  sender = normalizeStoredEmailText(sender).trim();
 
   const domain = sender.includes("@")
     ? sender.split("@")[1]?.toLowerCase().trim() || ""
@@ -282,6 +458,13 @@ router.post("/fetch-emails", async (req, res) => {
   const numericLimit = Number(limit) || (host && String(host).toLowerCase().includes('gmail') ? 1500 : 50);
   if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) {
     return res.status(400).json({ error: "port must be a valid number between 1 and 65535" });
+  }
+
+  try {
+    const changed = cleanStoredEmailRows();
+    if (changed) console.log(`[fetch] normalized stored rows=${changed}`);
+  } catch (err) {
+    console.error('Stored email normalization failed before fetch:', err && err.message);
   }
 
   // Load all custom rules once before processing emails.
@@ -447,7 +630,7 @@ router.post("/fetch-emails", async (req, res) => {
             }
 
             const { sender, rawSender, domain, name } = extractSenderInfo(message.envelope);
-            const subject = message.envelope?.subject || "(No subject)";
+            const subject = normalizeStoredEmailText(message.envelope?.subject || "(No subject)");
             const fetchedAt = new Date().toISOString();
 
           const classification = classify_sender(rawSender || sender, rules);
@@ -482,7 +665,18 @@ router.post("/fetch-emails", async (req, res) => {
           } catch (e) { }
 
           const parts = extractMessageParts(bodyBinary);
-          const info = insertEmailStmt.run(sender, domain, subject, dateValue, classification, fetchedAt, rawSender, bodyForDb, parts.text, parts.html);
+          const info = insertEmailStmt.run(
+            sender,
+            domain,
+            subject,
+            dateValue,
+            classification,
+            fetchedAt,
+            rawSender,
+            bodyForDb,
+            normalizeStoredEmailText(parts.text),
+            normalizeStoredEmailText(parts.html)
+          );
           const emailId = info && info.lastInsertRowid ? info.lastInsertRowid : null;
           // Debug logging: show whether insert created a row or was ignored due to unique index
           try {
@@ -575,7 +769,7 @@ router.post("/fetch-emails", async (req, res) => {
                   } catch (err) {}
                   
                   const { sender, rawSender, domain, name } = extractSenderInfo(message.envelope);
-                  const subject = message.envelope?.subject || "(No subject)";
+                  const subject = normalizeStoredEmailText(message.envelope?.subject || "(No subject)");
                   const fetchedAt = new Date().toISOString();
                   let classification = classify_sender(rawSender || sender, rules);
                   
@@ -594,7 +788,18 @@ router.post("/fetch-emails", async (req, res) => {
                   } catch (e) { }
 
                   const parts = extractMessageParts(bodyBinary);
-                  const info = insertEmailStmt.run(sender, domain, subject, dateValue, classification, fetchedAt, rawSender, bodyForDb, parts.text, parts.html);
+                  const info = insertEmailStmt.run(
+                    sender,
+                    domain,
+                    subject,
+                    dateValue,
+                    classification,
+                    fetchedAt,
+                    rawSender,
+                    bodyForDb,
+                    normalizeStoredEmailText(parts.text),
+                    normalizeStoredEmailText(parts.html)
+                  );
                   const emailId = info && info.lastInsertRowid ? info.lastInsertRowid : null;
 
                   if (emailId && parts.attachments && parts.attachments.length) {
@@ -891,5 +1096,13 @@ router.post('/reclassify-spam', (req, res) => {
     return res.status(500).json({ error: err && err.message });
   }
 });
+
+router._emailTextUtils = {
+  decodeBufferWithCharset,
+  decodeHtmlEntities: decodeHtmlEntitiesSafe,
+  normalizeEmailText: normalizeEmailTextSafe,
+  normalizeStoredEmailText,
+  omitSpanishAccents,
+};
 
 module.exports = router;
