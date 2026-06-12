@@ -34,9 +34,6 @@ export const connectToServer = (credentials) =>
 export const fetchEmails = (credentials, limit = 50) =>
   request('POST', '/api/fetch-emails', { ...credentials, limit });
 
-export const startFetchEmails = (credentials, limit = 50) =>
-  request('POST', '/api/fetch-emails', { ...credentials, limit });
-
 export const getFetchStatus = (jobId) =>
   request('GET', `/api/fetch-status/${encodeURIComponent(jobId)}`);
 
@@ -70,3 +67,9 @@ export const addRule = (domain, category) =>
 
 export const deleteRule = (domain) =>
   request('DELETE', `/api/rules/${encodeURIComponent(domain)}`);
+
+export const markAsRead = (id) =>
+  request('PATCH', `/api/emails/${id}/read`);
+
+export const reclassifySpam = () =>
+  request('POST', '/api/reclassify-spam');
