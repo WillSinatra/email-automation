@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { fetchEmails, getFetchStatus, getEmails, clearEmails, getEmailById, getEmailAttachments, getAttachmentUrl, downloadAttachment } from '../services/api';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { fetchEmails, getFetchStatus, getEmails, clearEmails, getEmailById, getEmailAttachments, getAttachmentUrl, downloadAttachment, getDepartments, getEmailCounts, reclassifySpam, getDateRange, markAsRead } from '../services/api';
 import FilterBar from '../components/FilterBar';
 import EmailTable from '../components/EmailTable';
 import RulesPanel from '../components/RulesPanel';
@@ -8,7 +8,7 @@ import withReactContent from 'sweetalert2-react-content';
 
 const MySwal = withReactContent(Swal);
 
-export default function DashboardPage({ credentials, onDisconnect }) {
+export default function DashboardPage({ credentials, account, onDisconnect, showAccountPanel, onToggleAccountPanel }) {
   // Full email list loaded from the database
   const [emails, setEmails] = useState([]);
   const [emailsLoading, setEmailsLoading] = useState(false);
@@ -24,8 +24,40 @@ export default function DashboardPage({ credentials, onDisconnect }) {
   const [fetchError, setFetchError] = useState(null);
   const [fetchJobId, setFetchJobId] = useState(null);
   const [fetchProgress, setFetchProgress] = useState(null);
+  const [autoRefreshing, setAutoRefreshing] = useState(false);
   const fetchPollRef = useRef(null);
   const prevFetchedRef = useRef(0);
+
+  // Auto-refresh notification with 30s auto-close
+  const AUTO_CLOSE_MS = 30000;
+  const [refreshNotif, setRefreshNotif] = useState(null);
+  const refreshNotifTimer = useRef(null);
+
+  function showRefreshNotif(message) {
+    if (refreshNotifTimer.current) {
+      clearTimeout(refreshNotifTimer.current);
+    }
+    setRefreshNotif({ message, startedAt: Date.now() });
+    refreshNotifTimer.current = setTimeout(() => {
+      setRefreshNotif(null);
+    }, AUTO_CLOSE_MS);
+  }
+
+  function closeRefreshNotif() {
+    if (refreshNotifTimer.current) {
+      clearTimeout(refreshNotifTimer.current);
+    }
+    setRefreshNotif(null);
+  }
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (refreshNotifTimer.current) {
+        clearTimeout(refreshNotifTimer.current);
+      }
+    };
+  }, []);
   const [selectedEmailId, setSelectedEmailId] = useState(null);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [selectedLoading, setSelectedLoading] = useState(false);
@@ -33,6 +65,20 @@ export default function DashboardPage({ credentials, onDisconnect }) {
   // Clear database action
   const [clearLoading, setClearLoading] = useState(false);
   const [clearError, setClearError] = useState(null);
+
+  // Email counts per classification
+  const [emailCounts, setEmailCounts] = useState({});
+
+  // Reclassify spam state
+  const [reclassifyLoading, setReclassifyLoading] = useState(false);
+  const [reclassifyMessage, setReclassifyMessage] = useState(null);
+  const [reclassifyResult, setReclassifyResult] = useState(null);
+
+  // Custom departments from the server
+  const [departments, setDepartments] = useState([]);
+
+  // Date range label from the server
+  const [dateRangeLabel, setDateRangeLabel] = useState('');
 
   // Read emails state
   const [readEmailIds, setReadEmailIds] = useState(() => {
@@ -46,13 +92,69 @@ export default function DashboardPage({ credentials, onDisconnect }) {
 
   const loadingRef = useRef(false);
 
-  const dateRangeText = useMemo(() => {
-    const now = new Date();
-    const minDate = new Date(now.getFullYear(), now.getMonth() - 2, 1);
-    const maxDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const formatOpts = { month: 'long', year: 'numeric' };
-    return `Showing emails from ${minDate.toLocaleDateString('en-US', formatOpts)} – ${maxDate.toLocaleDateString('en-US', formatOpts)}`;
+  const accountId = credentials?.account_id;
+
+  // Load departments (only when credentials exist)
+  async function loadDepartments() {
+    if (!credentials) return;
+    try {
+      setDepartments(await getDepartments(accountId));
+    } catch (err) {
+      console.error('departments failed:', err && err.message);
+    }
+  }
+
+  // Load counts (only when credentials exist)
+  async function loadCounts() {
+    if (!credentials) return;
+    try {
+      setEmailCounts(await getEmailCounts(accountId));
+    } catch (err) {
+      console.error('counts failed:', err && err.message);
+    }
+  }
+
+  async function handleReclassify() {
+    setReclassifyLoading(true);
+    setReclassifyMessage(null);
+    setReclassifyResult(null);
+    try {
+      const result = await reclassifySpam();
+      setReclassifyResult(result);
+      await loadEmails();
+      await loadCounts();
+    } catch (err) {
+      setReclassifyResult({ error: err.message });
+    } finally {
+      setReclassifyLoading(false);
+    }
+  }
+
+  // Load date range on mount
+  useEffect(() => {
+    getDateRange()
+      .then(r => setDateRangeLabel(r.label))
+      .catch(() => {});
   }, []);
+
+  // Load departments on mount (with credentials guard)
+  useEffect(() => {
+    if (!credentials) return;
+    loadDepartments();
+  }, [credentials]);
+
+  // Load counts on mount and refresh every 30 seconds (with credentials guard)
+  useEffect(() => {
+    if (!credentials) return;
+    const load = () => {
+      getEmailCounts(accountId)
+        .then(setEmailCounts)
+        .catch(() => {});
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => clearInterval(interval);
+  }, [credentials]);
 
   // Load stored emails on mount
   useEffect(() => {
@@ -71,54 +173,35 @@ export default function DashboardPage({ credentials, onDisconnect }) {
     setEmailsLoading(true);
     try {
       // Always load all emails; filters are applied client-side
-      setEmails(await getEmails());
+      setEmails(await getEmails(undefined, accountId));
     } catch (_) {
-      // Fail silently — table will show empty state
+      // Fail silently - table will show empty state
     } finally {
       setEmailsLoading(false);
       loadingRef.current = false;
     }
   }
 
-  async function handleFetch() {
-    setFetchLoading(true);
-    setFetchError(null);
-    setFetchProgress({ fetched: 0, limit: 0, status: 'starting' });
-    try {
-      const fetchPromise = fetchEmails(credentials, 1500);
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Fetch timed out. Try again.')), 30000)
-      );
-      const resp = await Promise.race([fetchPromise, timeoutPromise]);
-      const jobId = resp.jobId;
-      setFetchJobId(jobId);
-      // poll status
+  async function pollFetchJob(jobId) {
+    return new Promise((resolve) => {
       fetchPollRef.current = setInterval(async () => {
         try {
           const st = await getFetchStatus(jobId);
           setFetchProgress(st);
-          // If we've fetched any new messages since last check, refresh the inbox so user sees messages progressively
-          const prev = prevFetchedRef.current || 0;
-          const fetched = st.fetched || 0;
-          if (fetched > prev) {
-            prevFetchedRef.current = fetched;
-            // Trigger load without waiting, avoiding stale closures
-            loadEmails();
-          }
 
           if (st.status === 'done' || st.status === 'failed') {
             clearInterval(fetchPollRef.current);
             fetchPollRef.current = null;
             setFetchJobId(null);
-            setFetchLoading(false);
             if (st.status === 'done') {
-              await loadEmails();
+              const summary = `✓ Fetch completo: ${st.saved || 0} guardados, ${st.skipped || 0} duplicados omitidos`;
+              setFetchProgress({ ...st, summary });
             } else {
               setFetchError(st.lastError || 'Fetch failed');
             }
+            resolve(st);
           }
         } catch (e) {
-          // If the job is not found on the server (404), stop polling and show a clear error.
           const msg = e && e.message ? String(e.message).toLowerCase() : '';
           if (msg.includes('job not found') || msg.includes('404')) {
             clearInterval(fetchPollRef.current);
@@ -126,19 +209,85 @@ export default function DashboardPage({ credentials, onDisconnect }) {
             setFetchJobId(null);
             setFetchLoading(false);
             setFetchError('Fetch job not found on server (server may have restarted).');
-            // reload current emails in case the DB already has rows
-            try { if (!emailsLoading) await loadEmails(); } catch (_) {}
+            resolve(null);
             return;
           }
-          // ignore other transient polling errors
         }
-      }, 1000);
+      }, 2000);
+    });
+  }
+
+  async function handleFetch() {
+    setFetchLoading(true);
+    setFetchError(null);
+    setFetchProgress({ fetched: 0, limit: 1500, status: 'starting' });
+    try {
+      const resp = await fetchEmails(credentials, 1500);
+      const jobId = resp.jobId;
+      setFetchJobId(jobId);
+      const result = await pollFetchJob(jobId);
+      setFetchLoading(false);
+      if (result && result.status === 'done') {
+        await loadEmails();
+        await loadCounts();
+        // Refresh the date range label after fetch
+        try {
+          const range = await getDateRange();
+          setDateRangeLabel(range.label);
+        } catch (_) {}
+      }
     } catch (err) {
       setFetchError(err.message);
       setFetchLoading(false);
       setFetchProgress(null);
     }
   }
+
+  async function handleAutoRefresh() {
+    if (fetchLoading || fetchJobId || autoRefreshing) return;
+    setAutoRefreshing(true);
+    try {
+      const resp = await fetchEmails(credentials, 1500);
+      const jobId = resp.jobId;
+      // Small inline poll for auto-refresh
+      const done = await new Promise((resolve) => {
+        const poll = setInterval(async () => {
+          try {
+            const st = await getFetchStatus(jobId);
+            if (st.status === 'done' || st.status === 'failed') {
+              clearInterval(poll);
+              resolve(st.status === 'done' ? st : null);
+            }
+          } catch (_) {}
+        }, 2000);
+      });
+      if (done) {
+        await loadEmails();
+        await loadCounts();
+        await handleReclassify();
+        const savedCount = done.saved || 0;
+        showRefreshNotif(
+          `🔄 Actualización completada — ${savedCount} correos nuevos cargados`
+        );
+      }
+    } catch (err) {
+      console.error('[autoRefresh] failed:', err.message);
+    } finally {
+      setAutoRefreshing(false);
+    }
+  }
+
+  // Auto-refresh every 10 minutes
+  const isFetching = fetchLoading || !!fetchJobId;
+  useEffect(() => {
+    if (!credentials) return;
+    const interval = setInterval(() => {
+      if (!isFetching) {
+        handleAutoRefresh();
+      }
+    }, 600000);
+    return () => clearInterval(interval);
+  }, [credentials, isFetching]);
 
   async function handleClear() {
     if (
@@ -150,7 +299,7 @@ export default function DashboardPage({ credentials, onDisconnect }) {
     setClearLoading(true);
     setClearError(null);
     try {
-      await clearEmails();
+      await clearEmails(accountId);
       setEmails([]);
     } catch (err) {
       setClearError(err.message);
@@ -160,13 +309,23 @@ export default function DashboardPage({ credentials, onDisconnect }) {
   }
 
   async function openEmail(id) {
-    // Mark as read
-    setReadEmailIds((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      localStorage.setItem('readEmailIds', JSON.stringify([...next]));
-      return next;
-    });
+    // Mark as read via API and update local state immediately
+    try {
+      await markAsRead(id);
+      setReadEmailIds(prev => {
+        const next = new Set(prev);
+        next.add(id);
+        localStorage.setItem('readEmailIds', JSON.stringify([...next]));
+        return next;
+      });
+      setEmails(prev => prev.map(e =>
+        e.id === id
+          ? { ...e, is_read: 1 }
+          : e
+      ));
+    } catch (err) {
+      console.error('markAsRead failed:', err.message);
+    }
 
     // Show loading alert
     MySwal.fire({
@@ -179,7 +338,7 @@ export default function DashboardPage({ credentials, onDisconnect }) {
     });
 
     try {
-      const data = await getEmailById(id);
+      const data = await getEmailById(id, accountId);
       const atts = await getEmailAttachments(id).catch(() => []);
       data.attachments = atts || [];
       
@@ -189,7 +348,7 @@ export default function DashboardPage({ credentials, onDisconnect }) {
         html: (
           <div className="gmail-viewer-swal" style={{ textAlign: 'left', fontSize: '0.95rem' }}>
             <div className="gmail-meta" style={{ marginBottom: '15px', borderBottom: '1px solid #ddd', paddingBottom: '10px' }}>
-              <div className="gmail-from"><strong>From:</strong> {data.raw_sender || data.sender || '—'}</div>
+              <div className="gmail-from"><strong>From:</strong> {data.raw_sender || data.sender || '-'}</div>
               <div className="gmail-date"><strong>Date:</strong> {data.date ? new Date(data.date).toLocaleString() : ''}</div>
             </div>
             <div className="gmail-body" style={{ maxHeight: '55vh', overflowY: 'auto', paddingRight: '5px' }}>
@@ -270,8 +429,41 @@ export default function DashboardPage({ credentials, onDisconnect }) {
   function sanitizeHtml(dirty) {
     if (!dirty) return '';
     try {
+      // Step 1: Decode quoted-printable artifacts (e.g. =0A, =3D, =20) that may remain in the text
+      let clean = String(dirty);
+      // Decode common quoted-printable escape sequences before parsing
+      clean = clean.replace(/=0A/gi, '\n');
+      clean = clean.replace(/=0D/gi, '\r');
+      clean = clean.replace(/=09/gi, '\t');
+      clean = clean.replace(/=20/gi, ' ');
+      clean = clean.replace(/=3D/gi, '=');
+      clean = clean.replace(/=2C/gi, ',');
+      clean = clean.replace(/=22/gi, '"');
+      clean = clean.replace(/=27/gi, "'");
+      clean = clean.replace(/=28/gi, '(');
+      clean = clean.replace(/=29/gi, ')');
+      clean = clean.replace(/=3C/gi, '<');
+      clean = clean.replace(/=3E/gi, '>');
+      clean = clean.replace(/=40/gi, '@');
+      clean = clean.replace(/=2F/gi, '/');
+      clean = clean.replace(/=3A/gi, ':');
+      clean = clean.replace(/=3B/gi, ';');
+      // Catch any remaining =XX sequences (standalone ones that weren't part of HTML entities)
+      clean = clean.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => {
+        const code = parseInt(hex, 16);
+        // Decode printable ASCII (0x20-0x7E) and common line breaks
+        if (code === 0x0A) return '\n';
+        if (code === 0x0D) return '\r';
+        if (code === 0x09) return '\t';
+        if (code >= 0x20 && code <= 0x7E) return String.fromCharCode(code);
+        // For multi-byte UTF-8 sequences, keep the raw bytes pattern
+        return `=${hex}`;
+      });
+      // Remove soft line breaks (=\r\n or =\n) that are quoted-printable line continuations
+      clean = clean.replace(/=\r?\n/g, '');
+
       const parser = new DOMParser();
-      const doc = parser.parseFromString(dirty, 'text/html');
+      const doc = parser.parseFromString(clean, 'text/html');
       // Remove dangerous elements
       doc.querySelectorAll('script,style,iframe,object,embed').forEach((e) => e.remove());
       // Allowed attributes
@@ -289,18 +481,41 @@ export default function DashboardPage({ credentials, onDisconnect }) {
           if (!allowed.has(name)) node.removeAttribute(attr.name);
         });
       });
+
+      // Replace cid: images with a placeholder message
+      doc.querySelectorAll('img[src^="cid:"]').forEach((img) => {
+        const placeholder = doc.createElement('div');
+        placeholder.className = 'email-image-blocked';
+        placeholder.innerHTML = '<span class="email-image-blocked-icon">🖼️</span><span class="email-image-blocked-text">Image not available: this image is embedded in the email and cannot be displayed externally.</span>';
+        img.parentNode.replaceChild(placeholder, img);
+      });
+
+      // For external images, add an onerror handler to show a placeholder if the image fails to load
+      doc.querySelectorAll('img').forEach((img) => {
+        // Skip if already replaced or data URI
+        if (!img.getAttribute('src') || img.getAttribute('src').startsWith('data:')) return;
+        // Check if it looks like an external image URL (http/https)
+        const src = img.getAttribute('src');
+        if (src.startsWith('http://') || src.startsWith('https://')) {
+          img.setAttribute('onerror', "this.onerror=null; this.outerHTML='<div class=\"email-image-blocked\"><span class=\"email-image-blocked-icon\">🚫</span><span class=\"email-image-blocked-text\">Image blocked: the external image could not be loaded. Webmail protection may have prevented access.</span></div>';");
+        } else if (src.startsWith('//')) {
+          // Protocol-relative URL
+          img.setAttribute('onerror', "this.onerror=null; this.outerHTML='<div class=\"email-image-blocked\"><span class=\"email-image-blocked-icon\">🚫</span><span class=\"email-image-blocked-text\">Image blocked: the external image could not be loaded. Webmail protection may have prevented access.</span></div>';");
+        }
+      });
+
       return doc.body.innerHTML || '';
     } catch (e) {
       return '';
     }
   }
 
-  // All filtering is client-side — no extra API calls on filter change
+  // All filtering is client-side - no extra API calls on filter change
   const filteredEmails = useMemo(
     () => {
       const normalizedDomainFilter = filterDomain.trim().toLowerCase();
       // keyword-based detectors for new filters
-      const adminKeywords = ['factura', 'facturación', 'pago', 'pagos', 'recibo', 'cuenta', 'administracion', 'administración', 'tesoreria', 'tesorería', 'finanzas', 'cobro'];
+      const adminKeywords = ['factura', 'facturacion', 'pago', 'pagos', 'recibo', 'cuenta', 'administracion', 'tesoreria', 'finanzas', 'cobro'];
       const soporteKeywords = ['reclamo', 'reclamos', 'incidencia', 'queja', 'problema', 'soporte', 'reporte', 'reparacion', 'garantia'];
 
       function textForMatch(email) {
@@ -355,6 +570,97 @@ export default function DashboardPage({ credentials, onDisconnect }) {
     [emails, filterClass, filterDomain, filterMonth, filterYear, readEmailIds]
   );
 
+  function buildReclassifyLines(result) {
+    if (!result || result.error) return { lines: [], total: 0 };
+
+    const labelMap = {
+      adminCount:         'Administración',
+      soporteCount:       'Soporte Técnico',
+      ventasCount:        'Ventas',
+      instalacionesCount: 'Instalaciones',
+      logisticaCount:     'Logística',
+      proveedoresCount:   'Proveedores',
+      rrhhCount:          'RRHH',
+      legalCount:         'Legal',
+      infraestructuraCount: 'Infraestructura',
+      facturacionCount:   'Facturación',
+      atencionClienteCount: 'Atención al Cliente',
+      marketingCount:     'Marketing',
+      gerenciaCount:      'Gerencia',
+    };
+
+    const lines = [];
+    let total = 0;
+    for (const [key, val] of Object.entries(result)) {
+      if (key !== 'scanned' && val > 0) {
+        const label = labelMap[key] || key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
+        lines.push({ label, count: val });
+        total += val;
+      }
+    }
+    return { lines, total };
+  }
+
+  function ReclassifyResultPanel({ result, onClose }) {
+    const [visible, setVisible] = useState(true);
+    const { lines, total } = buildReclassifyLines(result);
+
+    useEffect(() => {
+      const timer = setTimeout(() => setVisible(false), 10000);
+      return () => clearTimeout(timer);
+    }, []);
+
+    if (!visible || !result) return null;
+
+    if (result.error) {
+      return (
+        <div className="reclassify-result-panel" style={{ borderColor: 'rgba(240,80,80,0.25)', background: 'rgba(240,80,80,0.07)' }}>
+          <span className="reclassify-ok" style={{ color: '#f05050' }}>✗</span>
+          Error: {result.error}
+          <button className="reclassify-close" onClick={onClose}>×</button>
+        </div>
+      );
+    }
+
+    if (lines.length === 0) {
+      return (
+        <div className="reclassify-result-panel">
+          <span className="reclassify-ok">✓</span>
+          Todo está al día. No se encontraron correos nuevos para organizar.
+          <button className="reclassify-close" onClick={onClose}>×</button>
+        </div>
+      );
+    }
+
+    if (lines.length === 1) {
+      return (
+        <div className="reclassify-result-panel">
+          <span className="reclassify-ok">✓</span>
+          Se organizaron {lines[0].count} correos de {lines[0].label} automáticamente.
+          <button className="reclassify-close" onClick={onClose}>×</button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="reclassify-result-panel">
+        <div className="reclassify-header">
+          <span className="reclassify-ok">✓</span>
+          Tus correos fueron organizados automáticamente.
+          <button className="reclassify-close" onClick={onClose}>×</button>
+        </div>
+        <ul className="reclassify-list">
+          {lines.map(({ label, count }) => (
+            <li key={label}>· {count} correos de {label}</li>
+          ))}
+        </ul>
+        <div className="reclassify-total">
+          Total: {total} correos organizados
+        </div>
+      </div>
+    );
+  }
+
   const sortedEmails = useMemo(() => {
     const today = new Date();
     // Use UTC-based year/month/day to avoid timezone-induced year shifts
@@ -385,13 +691,50 @@ export default function DashboardPage({ credentials, onDisconnect }) {
       return bTime - aTime;
     }).map(e => ({
       ...e,
-      isRead: readEmailIds.has(e.id)
+      isRead: readEmailIds.has(e.id),
+      displayClassification: e.classification,
+      showReadBadge: readEmailIds.has(e.id) || e.is_read === 1
     }));
   }, [filteredEmails, readEmailIds]);
 
+  function AutoRefreshNotif({ message, startedAt, durationMs, onClose }) {
+    const [progress, setProgress] = useState(100);
+
+    useEffect(() => {
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - startedAt;
+        const remaining = Math.max(0, 100 - (elapsed / durationMs) * 100);
+        setProgress(remaining);
+        if (remaining === 0) clearInterval(interval);
+      }, 300);
+      return () => clearInterval(interval);
+    }, [startedAt, durationMs]);
+
+    return (
+      <div className="auto-refresh-notif">
+        <div className="auto-refresh-notif-content">
+          <span>{message}</span>
+          <button
+            className="auto-refresh-notif-close"
+            onClick={onClose}
+            title="Cerrar"
+          >
+            ×
+          </button>
+        </div>
+        <div className="auto-refresh-notif-bar">
+          <div
+            className="auto-refresh-notif-progress"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="dashboard">
-      {/* ── Sticky header bar ── */}
+      {/* Sticky header bar */}
       <header className="dash-header">
         <div className="dash-header-info">
           <span className="dash-server">
@@ -401,24 +744,46 @@ export default function DashboardPage({ credentials, onDisconnect }) {
         </div>
 
         <div className="dash-header-actions">
+          <button
+            className="btn btn-secondary btn-sm account-panel-toggle"
+            onClick={onToggleAccountPanel}
+            title={showAccountPanel ? 'Ocultar cuentas' : 'Mostrar cuentas'}
+          >
+            {showAccountPanel ? '◀' : '▶'} Cuentas
+          </button>
           {fetchError && <span className="error-msg">{fetchError}</span>}
-          {fetchProgress && (
+          {reclassifyMessage && <span className="reclassify-msg">{reclassifyMessage}</span>}
+          {autoRefreshing && <span className="auto-refresh-msg">🔄 Actualizando...</span>}
+          {fetchProgress && fetchProgress.status !== 'done' && (
             <div style={{display:'flex', alignItems:'center', gap:8, marginRight:8}}>
               <div style={{width:200, height:10, background:'#222', borderRadius:6, overflow:'hidden'}}>
                 <div style={{width: `${fetchProgress.percent || 0}%`, height: '100%', background:'#2ea44f'}} />
               </div>
-              <div className="muted" style={{fontSize:'0.85rem'}}>
-                {fetchProgress.fetched || 0}/{fetchProgress.limit || '∞'} ({fetchProgress.percent || 0}%)
-                {fetchProgress.totalBatches ? ` — lote ${fetchProgress.currentBatch || 0}/${fetchProgress.totalBatches}` : ''}
+              <div className="muted" style={{fontSize:'0.85rem', whiteSpace:'nowrap'}}>
+                Procesando lote {fetchProgress.currentBatch || 0}/{fetchProgress.totalBatches || 30} — {fetchProgress.fetched || 0} correos ({fetchProgress.percent || 0}%)
               </div>
             </div>
+          )}
+          {fetchProgress && fetchProgress.summary && (
+            <span className="reclassify-msg">{fetchProgress.summary}</span>
           )}
           <button
             className="btn btn-primary btn-sm"
             onClick={handleFetch}
             disabled={fetchLoading}
           >
-            {fetchLoading ? 'Fetching…' : 'Fetch emails'}
+            {fetchLoading ? 'Fetching...' : 'Fetch emails'}
+          </button>
+          <span className="date-range-label">
+            📅 Correos de {dateRangeLabel}
+          </span>
+          <button
+            className="btn btn-accent btn-sm"
+            onClick={handleReclassify}
+            disabled={reclassifyLoading}
+            title="Organiza automáticamente los correos spam según los departamentos configurados"
+          >
+            {reclassifyLoading ? 'Reclasificando...' : 'Reclasificar'}
           </button>
           <button
             className="btn btn-secondary btn-sm"
@@ -429,7 +794,7 @@ export default function DashboardPage({ credentials, onDisconnect }) {
         </div>
       </header>
 
-      {/* ── Main content ── */}
+      {/* Main content */}
       <main className="dash-content">
         {/* Section 2: Filter controls */}
         <FilterBar
@@ -444,10 +809,35 @@ export default function DashboardPage({ credentials, onDisconnect }) {
           onClear={handleClear}
           clearLoading={clearLoading}
           clearError={clearError}
+          departments={departments}
+          onDepartmentsChange={loadDepartments}
+          counts={emailCounts}
+          accountId={accountId}
         />
-        <div className="date-range-info" style={{ marginTop: '-10px', marginBottom: '15px', color: 'var(--muted)', fontSize: '0.9rem' }}>
-          {dateRangeText}
-        </div>
+
+        {/* Onboarding banner for first-time users */}
+        {emails.length === 0 && !emailsLoading && !fetchLoading && !fetchJobId && (
+          <div className="onboarding-banner">
+            <div className="onboarding-banner-icon">👋</div>
+            <div className="onboarding-banner-content">
+              <h3>Bienvenido a la herramienta de automatización de correos</h3>
+              <ol>
+                <li>Asegurate de estar conectado al servidor de correo</li>
+                <li>Hacé clic en <strong>'Fetch Emails'</strong> para traer tus correos</li>
+                <li>Usá los filtros de arriba para ver correos por departamento</li>
+                <li>Hacé clic en <strong>'Reclasificar'</strong> para organizar automáticamente</li>
+              </ol>
+            </div>
+          </div>
+        )}
+
+        {/* Reclassify result panel */}
+        {reclassifyResult && (
+          <ReclassifyResultPanel
+            result={reclassifyResult}
+            onClose={() => setReclassifyResult(null)}
+          />
+        )}
 
         {/* Section 3: Email table */}
           <EmailTable emails={sortedEmails} loading={emailsLoading} fetchStarted={fetchLoading || !!fetchJobId} filterClass={filterClass} onRowClick={openEmail} />
@@ -455,6 +845,16 @@ export default function DashboardPage({ credentials, onDisconnect }) {
         {/* Section 4: Collapsible rules panel */}
         <RulesPanel />
       </main>
+
+      {/* Auto-refresh notification toast */}
+      {refreshNotif && (
+        <AutoRefreshNotif
+          message={refreshNotif.message}
+          startedAt={refreshNotif.startedAt}
+          durationMs={AUTO_CLOSE_MS}
+          onClose={closeRefreshNotif}
+        />
+      )}
     </div>
   );
 }

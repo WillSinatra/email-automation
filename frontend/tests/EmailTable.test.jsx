@@ -12,6 +12,7 @@ describe("EmailTable", () => {
         subject: "A",
         date: "2026-01-01T10:00:00.000Z",
         classification: "trusted",
+        isRead: true,
       },
       {
         id: 2,
@@ -47,6 +48,7 @@ describe("EmailTable", () => {
         subject: null,
         date: "2026-01-01T10:00:00.000Z",
         classification: "trusted",
+        isRead: true,
       },
       {
         id: 2,
@@ -73,7 +75,9 @@ describe("EmailTable", () => {
     expect(screen.getByText("trusted")).toHaveClass("badge-trusted");
     expect(screen.getByText("spam")).toHaveClass("badge-spam");
     expect(screen.getByText("ignored")).toHaveClass("badge-ignored");
+    expect(screen.getByText("read")).toHaveClass("badge-read");
+    expect(screen.getAllByText("unread")[0]).toHaveClass("badge-unread");
 
-    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.getByText("-")).toBeInTheDocument();
   });
 });

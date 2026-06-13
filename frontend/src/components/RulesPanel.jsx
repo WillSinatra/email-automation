@@ -26,7 +26,7 @@ export default function RulesPanel() {
     try {
       setRules(await getRules());
     } catch (_) {
-      // Silently fail on load — retry is implicit on next open
+      // Silently fail on load - retry is implicit on next open
     } finally {
       setLoading(false);
     }
@@ -74,7 +74,7 @@ export default function RulesPanel() {
       {open && (
         <div className="rules-body">
           {loading ? (
-            <p className="muted">Loading…</p>
+            <p className="muted">Loading...</p>
           ) : (
             <>
               {rules.length === 0 ? (
@@ -92,7 +92,7 @@ export default function RulesPanel() {
                         onClick={() => handleDelete(r.domain)}
                         disabled={deletingDomain === r.domain}
                       >
-                        {deletingDomain === r.domain ? '…' : 'Remove'}
+                        {deletingDomain === r.domain ? '...' : 'Remove'}
                       </button>
                       {deleteErrors[r.domain] && (
                         <span className="error-msg">
@@ -129,7 +129,7 @@ export default function RulesPanel() {
                   className="btn btn-primary btn-sm"
                   disabled={addLoading || !domain.trim()}
                 >
-                  {addLoading ? 'Adding…' : 'Add rule'}
+                  {addLoading ? 'Adding...' : 'Add rule'}
                 </button>
                 {addError && <span className="error-msg">{addError}</span>}
               </form>

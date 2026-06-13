@@ -31,11 +31,14 @@ describe("/api/emails", () => {
         subject TEXT,
         date TEXT,
         classification TEXT,
+        secondary_classification TEXT DEFAULT NULL,
+        is_read INTEGER DEFAULT 0,
         fetched_at TEXT,
         raw_sender TEXT,
         body TEXT,
         text TEXT,
-        html TEXT
+        html TEXT,
+        account_id TEXT DEFAULT 'default'
       );
       CREATE TABLE attachments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,7 +88,7 @@ describe("/api/emails", () => {
 
   test("GET /api/emails returns array", async () => {
     const app = buildApp();
-    const res = await request(app).get("/api/emails");
+    const res = await request(app).get("/api/emails?account_id=default");
 
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
@@ -94,7 +97,7 @@ describe("/api/emails", () => {
 
   test("GET /api/emails?classification=trusted returns only trusted emails", async () => {
     const app = buildApp();
-    const res = await request(app).get("/api/emails?classification=trusted");
+    const res = await request(app).get("/api/emails?classification=trusted&account_id=default");
 
     expect(res.status).toBe(200);
     expect(res.body.every((row) => row.classification === "trusted")).toBe(true);
@@ -108,7 +111,7 @@ describe("/api/emails", () => {
     expect(delRes.status).toBe(200);
     expect(delRes.body).toEqual({ success: true });
 
-    const afterRes = await request(app).get("/api/emails");
+    const afterRes = await request(app).get("/api/emails?account_id=default");
     expect(afterRes.status).toBe(200);
     expect(afterRes.body).toEqual([]);
   });
@@ -154,12 +157,44 @@ describe("/api/emails", () => {
     );
 
     const app = buildApp();
-    const res = await request(app).get("/api/emails/3");
+    const res = await request(app).get("/api/emails/3?account_id=default");
 
     expect(res.status).toBe(200);
     expect(res.body.subject).toBe("Administracion");
     expect(res.body.raw_sender).toBe("Maria <m@test.com>");
     expect(res.body.text).toBe("validacion");
     expect(res.body.html).toBe("<p>Administracion</p>");
+  });
+
+  test("GET responses normalize broken rows even if the database still has mojibake", async () => {
+    const app = buildApp();
+
+    db.prepare(`
+      INSERT INTO emails (sender, domain, subject, date, classification, fetched_at, raw_sender, text, html)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "late@test.com",
+      "test.com",
+      "N\u00c2\u00b0592 Administraci\u00c3\u00b3n",
+      "2026-01-04T10:00:00.000Z",
+      "trusted",
+      "2026-01-04T11:00:00.000Z",
+      "Mar\u00c3\u00ada Jos\u00c3\u00a9 Rojas <late@test.com>",
+      "validaci&=, oacute;n",
+      "<p>Mar\u00c3\u00ada Jos\u00c3\u00a9 - Administraci\u00c3\u00b3n</p>"
+    );
+
+    const detailRes = await request(app).get("/api/emails/3?account_id=default");
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.subject).toBe("N\u00b0592 Administracion");
+    expect(detailRes.body.raw_sender).toBe("Maria Jose Rojas <late@test.com>");
+    expect(detailRes.body.text).toBe("validacion");
+    expect(detailRes.body.html).toBe("<p>Maria Jose - Administracion</p>");
+
+    const listRes = await request(app).get("/api/emails?classification=trusted&account_id=default");
+    expect(listRes.status).toBe(200);
+    const row = listRes.body.find((email) => email.id === 3);
+    expect(row.subject).toBe("N\u00b0592 Administracion");
+    expect(row.raw_sender).toBe("Maria Jose Rojas <late@test.com>");
   });
 });

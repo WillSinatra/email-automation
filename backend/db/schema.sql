@@ -7,12 +7,18 @@ CREATE TABLE IF NOT EXISTS emails (
   date TEXT,
   classification TEXT,
   fetched_at TEXT,
-  raw_sender TEXT
+  raw_sender TEXT,
+  body TEXT,
+  text TEXT,
+  html TEXT,
+  account_id TEXT DEFAULT 'default',
+  is_read INTEGER DEFAULT 0,
+  secondary_classification TEXT DEFAULT NULL
 );
 
 -- Unique index to skip duplicates by sender + subject + date.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_unique_sender_subject_date
-ON emails(sender, subject, date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_unique
+ON emails (sender, subject, date, account_id);
 
 -- Custom domain rules table for override classification.
 CREATE TABLE IF NOT EXISTS rules (

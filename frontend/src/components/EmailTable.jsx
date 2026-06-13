@@ -1,7 +1,7 @@
 import StatusBadge from './StatusBadge';
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -14,12 +14,12 @@ function formatDate(iso) {
 export default function EmailTable({ emails, loading, fetchStarted, filterClass, onRowClick }) {
   // Show the loading state only when a fetch is active AND there are no emails yet.
   // Exception: when the user selected the `ignored` filter, we should not show a persistent
-  // "Loading emails…" because ignored messages are intentionally not stored. In that case
+  // "Loading emails..." because ignored messages are intentionally not stored. In that case
   // show the empty-state message instead.
   if (fetchStarted && (!emails || emails.length === 0) && filterClass !== 'ignored') {
     return (
       <div className="email-table-wrapper">
-        <p className="empty-state">Loading emails…</p>
+        <p className="empty-state">Loading emails...</p>
       </div>
     );
   }
@@ -57,19 +57,26 @@ export default function EmailTable({ emails, loading, fetchStarted, filterClass,
                       onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); onRowClick && onRowClick(e.id); } }}
                       style={{ background: 'transparent', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
                     >
-                      {e.raw_sender || e.sender || '—'}
+                      {e.raw_sender || e.sender || '-'}
                     </span>
                   </td>
-                  <td className="cell-domain">{e.domain || '—'}</td>
+                  <td className="cell-domain">{e.domain || '-'}</td>
                   <td className="cell-subject" title={e.subject}>
-                    {e.subject || '—'}
+                    {e.subject || '-'}
                   </td>
                   <td className="cell-date">{formatDate(e.date)}</td>
                   <td>
-                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                      <StatusBadge value={e.classification} />
-                      {e.isRead && <StatusBadge value="read" />}
-                    </div>
+                    <span style={{ display: 'inline-flex', gap: '4px', flexWrap: 'wrap' }}>
+                      <StatusBadge
+                        classification={e.displayClassification || e.classification}
+                      />
+                      {e.secondary_classification && (
+                        <StatusBadge classification={e.secondary_classification} />
+                      )}
+                      {e.showReadBadge && (
+                        <StatusBadge classification="read" />
+                      )}
+                    </span>
                   </td>
                 </tr>
               ))}
