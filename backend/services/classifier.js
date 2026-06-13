@@ -1,4 +1,4 @@
-// Pure classification function — no DB calls here.
+// Pure classification function - no DB calls here.
 // Receives rules already loaded from the database as an array of { domain, category }.
 
 // Trusted domains for the email automation tool.
@@ -141,4 +141,39 @@ function classifyEmail(senderDomain, rulesFromDB) {
   return classify_sender(senderDomain, rulesFromDB);
 }
 
-module.exports = { classifyEmail, classify_sender, extractSenderDomain };
+const IGNORED_SUBJECT_PATTERNS = [
+  // Courses and training
+  /curso[s]?\b/i,
+  /taller[es]?\b/i,
+  /capacitaci[oó]n/i,
+  /entrenamiento/i,
+  /formaci[oó]n/i,
+  /diplomado/i,
+  /seminario/i,
+  /webinar/i,
+  /workshop/i,
+  /e-?learning/i,
+  /aula virtual/i,
+  /inscripci[oó]n al curso/i,
+
+  // Consulting and professional services promos
+  /consultor[ií]a[s]?\b/i,
+  /consultores\b/i,
+  /asesor[ií]a[s]?\b/i,
+  /asesores\b/i,
+  /ingenier[ií]a[s]?\b/i,
+  /ingenieros\b/i,
+
+  // Generic promotional
+  /promoci[oó]n/i,
+  /oferta especial/i,
+  /descuento exclusivo/i,
+  /newsletter/i,
+  /publicidad/i,
+  /no responder/i,
+  /do not reply/i,
+  /unsubscribe/i,
+  /darse de baja/i,
+];
+
+module.exports = { classifyEmail, classify_sender, extractSenderDomain, IGNORED_SUBJECT_PATTERNS };

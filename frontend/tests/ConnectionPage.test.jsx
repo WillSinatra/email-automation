@@ -53,7 +53,7 @@ describe("ConnectionPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
-    expect(screen.getByRole("button", { name: "Connecting…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Connecting..." })).toBeDisabled();
 
     resolveRequest({ success: true });
     await waitFor(() => {

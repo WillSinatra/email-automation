@@ -11,7 +11,7 @@ function sanitizeDomain(raw) {
     .replace(/^\.+/, "");
 }
 
-// Basic domain format validation — must contain at least one dot and no spaces.
+// Basic domain format validation - must contain at least one dot and no spaces.
 function isValidDomain(domain) {
   return /^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$/.test(domain) && domain.includes(".");
 }
