@@ -17,15 +17,29 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  const handleConnect = (creds) => {
+  const handleConnect = async (creds) => {
     setCredentials(creds);
     setAddingAccount(false);
-    getAccounts().then(setAccounts).catch(() => {});
+    try {
+      const accs = await getAccounts();
+      setAccounts(accs);
+      const matched = accs.find(a => a.email === creds.user && a.host === creds.host);
+      if (matched) {
+        setActiveAccount(matched);
+      }
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const handleSelectAccount = (account) => {
+    if (activeAccount && activeAccount.id === account.id && credentials) {
+      // If we are already logged in to this account, do nothing
+      return;
+    }
     setActiveAccount(account);
     setCredentials(null);
+    setAddingAccount(false);
     setShowAccountPanel(true);
   };
 
@@ -57,27 +71,7 @@ export default function App() {
     }
   }
 
-  if (addingAccount || (!credentials && !activeAccount)) {
-    return (
-      <div style={{ display: 'flex', minHeight: '100vh' }}>
-        {showAccountPanel && (
-          <AccountSwitcher
-            accounts={accounts}
-            activeId={activeAccount?.id}
-            onSelect={handleSelectAccount}
-            onAdd={handleAddAccount}
-            onToggle={() => setShowAccountPanel(false)}
-          />
-        )}
-        <div style={{ flex: 1 }}>
-          <ConnectionPage
-            onConnect={handleConnect}
-            onAccountCreated={() => getAccounts().then(setAccounts).catch(() => {})}
-          />
-        </div>
-      </div>
-    );
-  }
+  const showConnection = addingAccount || !credentials;
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
@@ -91,15 +85,23 @@ export default function App() {
         />
       )}
       <div style={{ flex: 1 }}>
-        <ErrorBoundary>
-          <DashboardPage
-            credentials={{ ...credentials, account_id: activeAccount?.id }}
+        {showConnection ? (
+          <ConnectionPage
             account={activeAccount}
-            onDisconnect={handleDisconnect}
-            showAccountPanel={showAccountPanel}
-            onToggleAccountPanel={() => setShowAccountPanel(prev => !prev)}
+            onConnect={handleConnect}
+            onAccountCreated={() => getAccounts().then(setAccounts).catch(() => {})}
           />
-        </ErrorBoundary>
+        ) : (
+          <ErrorBoundary>
+            <DashboardPage
+              credentials={{ ...credentials, account_id: activeAccount?.id }}
+              account={activeAccount}
+              onDisconnect={handleDisconnect}
+              showAccountPanel={showAccountPanel}
+              onToggleAccountPanel={() => setShowAccountPanel(prev => !prev)}
+            />
+          </ErrorBoundary>
+        )}
       </div>
     </div>
   );

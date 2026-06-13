@@ -116,9 +116,10 @@ try {
 try {
   db.exec('DROP INDEX IF EXISTS idx_emails_unique');
   db.exec('DROP INDEX IF EXISTS idx_emails_unique_sender_subject_date');
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_unique ON emails (sender, subject, date)');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_unique ON emails (sender, subject, date, account_id)');
+  console.log('[db] unique index recreated with account_id');
 } catch (err) {
-  console.error('Failed to recreate unique index:', err && err.message);
+  console.error('[db] unique index migration failed:', err && err.message);
 }
 
 // ===== MULTI-ACCOUNT MIGRATIONS =====

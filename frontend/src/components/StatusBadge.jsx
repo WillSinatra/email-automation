@@ -23,6 +23,11 @@ export default function StatusBadge({
       color: '#facc15',
       border: '1px solid rgba(250, 204, 21, 0.35)'
     },
+    unread: {
+      background: 'rgba(156, 169, 184, 0.1)',
+      color: '#9ca9b8',
+      border: '1px solid rgba(156, 169, 184, 0.3)'
+    },
     administracion: {
       background: 'rgba(6, 182, 212, 0.12)',
       color: '#06b6d4',

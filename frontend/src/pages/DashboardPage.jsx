@@ -312,9 +312,15 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
     // Mark as read via API and update local state immediately
     try {
       await markAsRead(id);
+      setReadEmailIds(prev => {
+        const next = new Set(prev);
+        next.add(id);
+        localStorage.setItem('readEmailIds', JSON.stringify([...next]));
+        return next;
+      });
       setEmails(prev => prev.map(e =>
         e.id === id
-          ? { ...e, is_read: 1, classification: 'read' }
+          ? { ...e, is_read: 1 }
           : e
       ));
     } catch (err) {
@@ -685,7 +691,9 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
       return bTime - aTime;
     }).map(e => ({
       ...e,
-      isRead: readEmailIds.has(e.id)
+      isRead: readEmailIds.has(e.id),
+      displayClassification: e.classification,
+      showReadBadge: readEmailIds.has(e.id) || e.is_read === 1
     }));
   }, [filteredEmails, readEmailIds]);
 

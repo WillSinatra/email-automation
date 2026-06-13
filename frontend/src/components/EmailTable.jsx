@@ -66,12 +66,17 @@ export default function EmailTable({ emails, loading, fetchStarted, filterClass,
                   </td>
                   <td className="cell-date">{formatDate(e.date)}</td>
                   <td>
-                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <span style={{ display: 'inline-flex', gap: '4px', flexWrap: 'wrap' }}>
                       <StatusBadge
-                        classification={e.classification}
-                        secondaryClassification={e.is_read === 1 ? 'read' : e.secondary_classification}
+                        classification={e.displayClassification || e.classification}
                       />
-                    </div>
+                      {e.secondary_classification && (
+                        <StatusBadge classification={e.secondary_classification} />
+                      )}
+                      {e.showReadBadge && (
+                        <StatusBadge classification="read" />
+                      )}
+                    </span>
                   </td>
                 </tr>
               ))}

@@ -226,8 +226,11 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 const insertEmailStmt = db.prepare(`
-  INSERT OR IGNORE INTO emails (sender, domain, subject, date, classification, fetched_at, raw_sender, body, text, html, account_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT OR IGNORE INTO emails
+  (sender, domain, subject, date, classification,
+   fetched_at, raw_sender, body, text, html,
+   account_id, is_read, secondary_classification)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachmentStmt = db.prepare(
@@ -327,6 +330,7 @@ router.post("/fetch-emails", async (req, res) => {
     return res.status(400).json({ error: "host, port, user and password are required" });
   }
   const accountId = account_id || 'default';
+  console.log('[fetch] accountId:', accountId);
 
   const numericPort = Number(port);
   const numericLimit = 1500;
@@ -439,6 +443,7 @@ router.post("/fetch-emails", async (req, res) => {
           let savedCount = 0;
           let skippedCount = 0;
           let batchIndex = 0;
+          let debugCount = 0;
           const failedUids = [];
 
           while (processedCount < uids.length) {
@@ -514,15 +519,36 @@ router.post("/fetch-emails", async (req, res) => {
                       } catch (e) {}
 
                       const parts = extractMessageParts(bodyBinary);
+
+                      if (debugCount < 5) {
+                        console.log(`[fetch:debug] email ${debugCount + 1}:`, {
+                          sender,
+                          subject: String(subject || '').slice(0, 50),
+                          dateValue,
+                          accountId,
+                          finalClassification: computedClassification,
+                          columnsCount: 13
+                        });
+                        debugCount++;
+                      }
+
                       const info = insertEmailStmt.run(
-                        sender, domain, subject, dateValue, classification, fetchedAt, rawSender,
+                        sender, domain, subject, dateValue, computedClassification, fetchedAt, rawSender,
                         bodyForDb, normalizeStoredEmailText(parts.text), normalizeStoredEmailText(parts.html),
-                        accountId
+                        accountId, 0, null
                       );
+
+                      if (debugCount <= 5) {
+                        console.log(`[fetch:debug] insert result:`, {
+                          changes: info.changes,
+                          lastInsertRowid: info.lastInsertRowid
+                        });
+                      }
+
                       const emailId = info && info.lastInsertRowid ? info.lastInsertRowid : null;
 
                       // PROBLEM D: Track saved vs skipped
-                      if (info && info.changes && info.changes > 0) {
+                      if (info && info.changes > 0) {
                         savedCount++;
                       } else {
                         skippedCount++;
@@ -606,7 +632,7 @@ router.post("/fetch-emails", async (req, res) => {
                   } catch (e) {}
 
                   const parts = extractMessageParts(bodyBinary);
-                  const info = insertEmailStmt.run(sender, domain, subject, dateValue, classification, fetchedAt, rawSender, bodyForDb, normalizeStoredEmailText(parts.text), normalizeStoredEmailText(parts.html), accountId);
+                  const info = insertEmailStmt.run(sender, domain, subject, dateValue, classification, fetchedAt, rawSender, bodyForDb, normalizeStoredEmailText(parts.text), normalizeStoredEmailText(parts.html), accountId, 0, null);
                   const emailId = info && info.lastInsertRowid ? info.lastInsertRowid : null;
                   if (emailId && parts.attachments && parts.attachments.length) {
                     const attachDir = path.join(__dirname, '..', 'db', 'attachments');

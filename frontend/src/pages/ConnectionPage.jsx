@@ -1,15 +1,35 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { connectToServer, createAccount } from '../services/api';
 
-export default function ConnectionPage({ onConnect, onAccountCreated }) {
+export default function ConnectionPage({ onConnect, onAccountCreated, account }) {
   const [form, setForm] = useState({
-    host: 'imap.netlatin.com.ar',
-    port: '993',
-    user: '',
+    host: account?.host || 'imap.netlatin.com.ar',
+    port: account?.port || '993',
+    user: account?.email || '',
     password: '',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (account) {
+      setForm(prev => ({
+        ...prev,
+        host: account.host || 'imap.netlatin.com.ar',
+        port: account.port || '993',
+        user: account.email || '',
+        // keep the typed password if the user is the same, otherwise clear it
+        password: prev.user === account.email ? prev.password : '',
+      }));
+    } else {
+      setForm({
+        host: 'imap.netlatin.com.ar',
+        port: '993',
+        user: '',
+        password: '',
+      });
+    }
+  }, [account]);
 
   const set = (key) => (e) =>
     setForm((f) => ({ ...f, [key]: e.target.value }));
