@@ -121,6 +121,9 @@ export const createAccount = (email, host, port, label) =>
 export const deleteAccount = (id) =>
   request('DELETE', `/api/accounts/${id}`);
 
+export const resetAccounts = () =>
+  request('DELETE', '/api/accounts/reset');
+
 export const updateAccount = (id, data) =>
   request('PATCH', `/api/accounts/${id}`, data);
 
@@ -179,8 +182,8 @@ export const deleteRule = (domain) =>
 export const markAsRead = (id) =>
   request('PATCH', `/api/emails/${id}/read`);
 
-export const reclassifySpam = () =>
-  request('POST', '/api/reclassify-spam');
+export const reclassifySpam = (accountId) =>
+  request('POST', `/api/reclassify-spam?account_id=${accountId || 'default'}`);
 
 export const getDateRange = () =>
   request('GET', '/api/date-range');

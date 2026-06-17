@@ -35,6 +35,8 @@ const IGNORED_EMAILS = [
   "no-reply@netflix.com",
   "info@newsletter.mercadolibre.com",
   "noreply@mercadolibre.com",
+  "noreply@racingenieria.com.ar",
+  
 ].map((s) => s.toLowerCase());
 
 function isTrustedDomain(domain) {

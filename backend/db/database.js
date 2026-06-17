@@ -112,6 +112,17 @@ try {
 		console.error('Failed to ensure attachments directory:', err && err.message);
 	}
 
+// Add content_id to attachments table
+try {
+  const cols = db.prepare("PRAGMA table_info(attachments)").all();
+  if (!cols.some(c => c.name === 'content_id')) {
+    db.exec("ALTER TABLE attachments ADD COLUMN content_id TEXT DEFAULT NULL");
+    console.log('[db] added content_id column to attachments');
+  }
+} catch (err) {
+  console.error('[db] attachments content_id migration failed:', err.message);
+}
+
 // Ensure unique index on emails includes sender+subject+date (recreate if wrong)
 try {
   db.exec('DROP INDEX IF EXISTS idx_emails_unique');
@@ -164,6 +175,35 @@ try {
   console.error('[db] accounts table creation failed:', err.message);
 }
 
+// Audit log table for tracking connection attempts and security events
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      account_email TEXT,
+      ip_address TEXT,
+      success INTEGER,
+      details TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+  console.log('[db] audit_log table ready');
+} catch (err) {
+  console.error('[db] audit_log table creation failed:', err.message);
+}
+
+// Add encrypted_password column to accounts table for secure credential storage
+try {
+  const cols = db.prepare("PRAGMA table_info(accounts)").all();
+  if (!cols.some(c => c.name === 'encrypted_password')) {
+    db.exec("ALTER TABLE accounts ADD COLUMN encrypted_password TEXT DEFAULT NULL");
+    console.log('[db] added encrypted_password column to accounts');
+  }
+} catch (err) {
+  console.error('[db] encrypted_password migration failed:', err.message);
+}
+
 // Add secondary_classification column to emails table
 try {
   const cols = db.prepare("PRAGMA table_info(emails)").all();
@@ -191,7 +231,7 @@ try {
   console.error('Failed to ensure departments table:', err && err.message);
 }
 
-// Ensure keywords and description columns exist (migration for existing table)
+// Ensure keywords, description, and color columns exist (migration for existing table)
 try {
   const deptInfo = db.prepare("PRAGMA table_info(departments)").all();
   const hasKeywords = deptInfo.some((c) => c.name === "keywords");
@@ -203,6 +243,11 @@ try {
   if (!hasDescription) {
     db.exec("ALTER TABLE departments ADD COLUMN description TEXT DEFAULT ''");
     console.log('[db] added description column to departments');
+  }
+  const hasColor = deptInfo.some((c) => c.name === "color");
+  if (!hasColor) {
+    db.exec("ALTER TABLE departments ADD COLUMN color TEXT DEFAULT NULL");
+    console.log('[db] added color column to departments');
   }
 } catch (err) {
   console.error('Failed to add columns to departments:', err && err.message);

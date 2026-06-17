@@ -234,11 +234,11 @@ const insertEmailStmt = db.prepare(`
 `);
 
 const insertAttachmentStmt = db.prepare(
-  "INSERT INTO attachments (email_id, filename, content_type, path, created_at) VALUES (?, ?, ?, ?, ?)"
+  "INSERT INTO attachments (email_id, filename, content_type, path, created_at, content_id) VALUES (?, ?, ?, ?, ?, ?)"
 );
 
 const selectAttachmentsByEmailStmt = db.prepare(
-  "SELECT id, filename, content_type, path, created_at FROM attachments WHERE email_id = ?"
+  "SELECT id, filename, content_type, path, created_at, content_id FROM attachments WHERE email_id = ?"
 );
 
 const selectAllStmt = db.prepare(`
@@ -426,19 +426,19 @@ router.post("/fetch-emails", async (req, res) => {
           fetchJobs.set(jobId, jobErr);
         }
 
-        if (!uids || uids.length === 0) {
-          console.log("IMAP SEARCH returned 0 emails");
-        } else {
-          console.log(`IMAP SEARCH returned ${uids.length} emails`);
+        console.log(`[fetch] raw UIDs from IMAP search: ${uids.length}`);
 
-          // PROBLEM C: Slice UIDs to limit before processing
+        if (!uids || uids.length === 0) {
+          console.log("[fetch] IMAP SEARCH returned 0 emails");
+        } else {
+          // Slice UIDs to limit before processing
           uids = uids.slice(0, numericLimit);
           console.log(`[fetch] UIDs after slice: ${uids.length}`);
 
           // Newest first
           uids.reverse();
 
-          // Process UIDs in fixed-size batches
+          // Process UIDs in fixed-size batches using stream fetch (bulk)
           let processedCount = 0;
           let savedCount = 0;
           let skippedCount = 0;
@@ -452,142 +452,148 @@ router.post("/fetch-emails", async (req, res) => {
             const batchUids = uids.slice(start, end);
             let batchAttemptSize = batchUids.length;
             batchIndex++;
+            let batchFetched = 0;
 
             while (batchAttemptSize >= 1) {
               const tryUids = batchUids.slice(0, batchAttemptSize);
               try {
-                for (const singleUid of tryUids) {
+                // Bulk fetch: pass all UIDs as comma-separated string
+                const uidStr = tryUids.join(',');
+                for await (const message of bgClient.fetch(uidStr, { envelope: true, internalDate: true, source: true }, { uid: true })) {
                   processedCount++;
+                  batchFetched++;
 
+                  const msgDateStr = message.envelope?.date || message.internalDate;
+                  if (!isValidEmailDate(msgDateStr)) continue;
+
+                  let dateValue = new Date().toISOString();
                   try {
-                    for await (const message of bgClient.fetch(String(singleUid), { envelope: true, internalDate: true, source: true }, { uid: true })) {
-                      const msgDateStr = message.envelope?.date || message.internalDate;
-                      if (!isValidEmailDate(msgDateStr)) continue;
-
-                      let dateValue = new Date().toISOString();
-                      try {
-                        if (msgDateStr) {
-                          const msgDate = new Date(msgDateStr);
-                          if (!isNaN(msgDate.getTime())) dateValue = msgDate.toISOString();
-                        }
-                      } catch (err) {
-                        console.warn(`Could not parse date: ${msgDateStr}`);
-                      }
-
-                      const { sender, rawSender, domain, name } = extractSenderInfo(message.envelope);
-                      const subject = normalizeStoredEmailText(message.envelope?.subject || "(No subject)");
-                      const fetchedAt = new Date().toISOString();
-
-                      const classification = classify_sender(rawSender || sender, rules);
-                      const subj = String(subject || '').trim();
-                      let computedClassification = classification;
-
-                      // Check subject/sender against IGNORED_SUBJECT_PATTERNS
-                      const subjectLower = String(subject || '').toLowerCase();
-                      const senderLower = String(rawSender || sender || '').toLowerCase();
-                      const searchText = `${subjectLower} ${senderLower}`;
-                      const isIgnoredByPattern = IGNORED_SUBJECT_PATTERNS.some(
-                        pattern => pattern.test(searchText)
-                      );
-                      if (isIgnoredByPattern) {
-                        computedClassification = 'ignored';
-                      }
-
-                      const skipPrefix = /^\s*(Cursos|Taller)/i;
-                      if (computedClassification !== 'ignored') {
-                        if (subj && skipPrefix.test(subj)) {
-                          computedClassification = 'ignored';
-                        } else if (/newsletter/i.test(subj) || /newsletter/i.test(rawSender) || (domain && domain.toLowerCase().includes('newsletter'))) {
-                          computedClassification = 'ignored';
-                        } else if (name && String(name).trim().toLowerCase() === 'soluciones it aps') {
-                          computedClassification = 'ignored';
-                        }
-                      }
-
-                      let bodyForDb = "";
-                      let bodyBinary = "";
-                      try {
-                        if (message.source) {
-                          if (Buffer.isBuffer(message.source)) {
-                            bodyForDb = message.source.toString("utf8");
-                            bodyBinary = message.source.toString("binary");
-                          } else {
-                            bodyForDb = String(message.source);
-                            bodyBinary = String(message.source);
-                          }
-                        }
-                      } catch (e) {}
-
-                      const parts = extractMessageParts(bodyBinary);
-
-                      if (debugCount < 5) {
-                        console.log(`[fetch:debug] email ${debugCount + 1}:`, {
-                          sender,
-                          subject: String(subject || '').slice(0, 50),
-                          dateValue,
-                          accountId,
-                          finalClassification: computedClassification,
-                          columnsCount: 13
-                        });
-                        debugCount++;
-                      }
-
-                      const info = insertEmailStmt.run(
-                        sender, domain, subject, dateValue, computedClassification, fetchedAt, rawSender,
-                        bodyForDb, normalizeStoredEmailText(parts.text), normalizeStoredEmailText(parts.html),
-                        accountId, 0, null
-                      );
-
-                      if (debugCount <= 5) {
-                        console.log(`[fetch:debug] insert result:`, {
-                          changes: info.changes,
-                          lastInsertRowid: info.lastInsertRowid
-                        });
-                      }
-
-                      const emailId = info && info.lastInsertRowid ? info.lastInsertRowid : null;
-
-                      // PROBLEM D: Track saved vs skipped
-                      if (info && info.changes > 0) {
-                        savedCount++;
-                      } else {
-                        skippedCount++;
-                        console.log(`[fetch] DUPLICATE SKIPPED:`, sender, subject, dateValue);
-                      }
-
-                      if (emailId && parts.attachments && parts.attachments.length) {
-                        const attachDir = path.join(__dirname, '..', 'db', 'attachments');
-                        try { if (!fs.existsSync(attachDir)) fs.mkdirSync(attachDir, { recursive: true }); } catch (_) {}
-                        parts.attachments.forEach((att, idx) => {
-                          try {
-                            const safe = (att.filename || `attach_${idx}`).replace(/[^a-z0-9.\-_]/gi, '_');
-                            const fname = `${emailId}_${Date.now()}_${idx}_${safe}`;
-                            const full = path.join(attachDir, fname);
-                            fs.writeFileSync(full, att.data);
-                            insertAttachmentStmt.run(emailId, att.filename, att.contentType, full, new Date().toISOString());
-                          } catch (_) {}
-                        });
-                      }
-
-                      rows.push({ id: emailId, sender, raw_sender: rawSender, domain, subject, date: dateValue, classification, fetched_at: fetchedAt });
-
-                      // PROBLEM E: Update job progress with saved/skipped
-                      const jobState = fetchJobs.get(jobId) || {};
-                      jobState.fetched = processedCount;
-                      jobState.saved = savedCount;
-                      jobState.skipped = skippedCount;
-                      jobState.currentBatch = Math.ceil(processedCount / BATCH_SIZE);
-                      fetchJobs.set(jobId, jobState);
+                    if (msgDateStr) {
+                      const msgDate = new Date(msgDateStr);
+                      if (!isNaN(msgDate.getTime())) dateValue = msgDate.toISOString();
                     }
-                  } catch (singleErr) {
-                    console.warn(`[fetch:${jobId}] Skipping UID ${singleUid}:`, singleErr && singleErr.message);
-                    failedUids.push(singleUid);
-                  } finally {
-                    // Log progress every batch
-                    const j = fetchJobs.get(jobId) || {};
-                    console.log(`[fetch] progress fetched=${processedCount} saved=${j.saved || 0} skipped=${j.skipped || 0} batch=${batchIndex}/${Math.ceil(numericLimit / BATCH_SIZE)}`);
+                  } catch (err) {
+                    console.warn(`[fetch] Could not parse date: ${msgDateStr}`);
                   }
+
+                  const { sender, rawSender, domain, name } = extractSenderInfo(message.envelope);
+                  const subject = normalizeStoredEmailText(message.envelope?.subject || "(No subject)");
+                  const fetchedAt = new Date().toISOString();
+
+                  const classification = classify_sender(rawSender || sender, rules);
+                  const subj = String(subject || '').trim();
+                  let computedClassification = classification;
+
+                  // Check subject/sender against IGNORED_SUBJECT_PATTERNS
+                  const subjectLower = String(subject || '').toLowerCase();
+                  const senderLower = String(rawSender || sender || '').toLowerCase();
+                  const searchText = `${subjectLower} ${senderLower}`;
+                  const isIgnoredByPattern = IGNORED_SUBJECT_PATTERNS.some(
+                    pattern => pattern.test(searchText)
+                  );
+                  if (isIgnoredByPattern) {
+                    computedClassification = 'ignored';
+                  }
+
+                  const skipPrefix = /^\s*(Cursos|Taller)/i;
+                  if (computedClassification !== 'ignored') {
+                    if (subj && skipPrefix.test(subj)) {
+                      computedClassification = 'ignored';
+                    } else if (/newsletter/i.test(subj) || /newsletter/i.test(rawSender) || (domain && domain.toLowerCase().includes('newsletter'))) {
+                      computedClassification = 'ignored';
+                    } else if (name && String(name).trim().toLowerCase() === 'soluciones it aps') {
+                      computedClassification = 'ignored';
+                    }
+                  }
+
+                  let bodyForDb = "";
+                  let bodyBinary = "";
+                  try {
+                    if (message.source) {
+                      if (Buffer.isBuffer(message.source)) {
+                        bodyForDb = message.source.toString("utf8");
+                        bodyBinary = message.source.toString("binary");
+                      } else {
+                        bodyForDb = String(message.source);
+                        bodyBinary = String(message.source);
+                      }
+                    }
+                  } catch (e) {}
+
+                  const parts = extractMessageParts(bodyBinary);
+
+                  if (debugCount < 5) {
+                    console.log(`[fetch:debug] email ${debugCount + 1}:`, {
+                      sender,
+                      subject: String(subject || '').slice(0, 50),
+                      dateValue,
+                      accountId,
+                      finalClassification: computedClassification,
+                      columnsCount: 13
+                    });
+                    debugCount++;
+                  }
+
+                  const info = insertEmailStmt.run(
+                    sender, domain, subject, dateValue, computedClassification, fetchedAt, rawSender,
+                    bodyForDb, normalizeStoredEmailText(parts.text), normalizeStoredEmailText(parts.html),
+                    accountId, 0, null
+                  );
+
+                  if (debugCount <= 5) {
+                    console.log(`[fetch:debug] insert result:`, {
+                      changes: info.changes,
+                      lastInsertRowid: info.lastInsertRowid
+                    });
+                  }
+
+                  const emailId = info && info.lastInsertRowid ? info.lastInsertRowid : null;
+
+                  if (info && info.changes > 0) {
+                    savedCount++;
+                  } else {
+                    skippedCount++;
+                    console.log(`[fetch] DUPLICATE SKIPPED:`, sender, subject, dateValue);
+                  }
+
+                  if (emailId && parts.attachments && parts.attachments.length) {
+                    const attachDir = path.join(__dirname, '..', 'db', 'attachments');
+                    try { if (!fs.existsSync(attachDir)) fs.mkdirSync(attachDir, { recursive: true }); } catch (_) {}
+                    parts.attachments.forEach((att, idx) => {
+                      try {
+                        const safe = (att.filename || `attach_${idx}`).replace(/[^a-z0-9.\-_]/gi, '_');
+                        const fname = `${emailId}_${Date.now()}_${idx}_${safe}`;
+                        const full = path.join(attachDir, fname);
+                        fs.writeFileSync(full, att.data);
+                        insertAttachmentStmt.run(emailId, att.filename, att.contentType, full, new Date().toISOString(), att.contentId || null);
+                      } catch (_) {}
+                    });
+                  }
+
+                  rows.push({ id: emailId, sender, raw_sender: rawSender, domain, subject, date: dateValue, classification, fetched_at: fetchedAt });
+
+                  // Update job progress
+                  const jobState = fetchJobs.get(jobId) || {};
+                  jobState.fetched = processedCount;
+                  jobState.saved = savedCount;
+                  jobState.skipped = skippedCount;
+                  jobState.currentBatch = batchIndex;
+                  fetchJobs.set(jobId, jobState);
                 }
+
+                // Batch completed successfully
+                console.log(`[fetch] progress fetched=${processedCount} saved=${savedCount} skipped=${skippedCount} batch=${batchIndex}/${Math.ceil(numericLimit / BATCH_SIZE)}`);
+
+                if (batchFetched >= BATCH_SIZE) {
+                  // Mark batch complete for frontend progressive display
+                  const jobState = fetchJobs.get(jobId) || {};
+                  jobState.currentBatch = (jobState.currentBatch || 0) + 1;
+                  batchFetched = 0;
+                  jobState.hasNewBatch = true;
+                  jobState.lastBatchCompletedAt = new Date().toISOString();
+                  fetchJobs.set(jobId, jobState);
+                }
+
                 break; // batch succeeded, exit retry loop
               } catch (fetchErr) {
                 console.error(`[fetch:${jobId}] IMAP FETCH error (batch=${batchAttemptSize}):`, fetchErr && fetchErr.message);
@@ -598,18 +604,20 @@ router.post("/fetch-emails", async (req, res) => {
                   batchAttemptSize = Math.max(1, Math.floor(batchAttemptSize / 2));
                   continue;
                 } else {
-                  throw fetchErr;
+                  failedUids.push(...tryUids);
+                  break;
                 }
               }
             }
           }
 
-          // Retry failed UIDs
+          // Retry failed UIDs (individually, as last resort)
           if (failedUids.length > 0) {
-            console.log(`[fetch:${jobId}] Retrying ${failedUids.length} failed UIDs...`);
+            console.log(`[fetch:${jobId}] Retrying ${failedUids.length} failed UIDs individually...`);
             for (const singleUid of failedUids) {
               try {
                 for await (const message of bgClient.fetch(String(singleUid), { envelope: true, internalDate: true, source: true }, { uid: true })) {
+                  processedCount++;
                   const msgDateStr = message.envelope?.date || message.internalDate;
                   let dateValue = new Date().toISOString();
                   try {
@@ -620,6 +628,20 @@ router.post("/fetch-emails", async (req, res) => {
                   const subject = normalizeStoredEmailText(message.envelope?.subject || "(No subject)");
                   const fetchedAt = new Date().toISOString();
                   let classification = classify_sender(rawSender || sender, rules);
+
+                  const subjectLower = String(subject || '').toLowerCase();
+                  const senderLower = String(rawSender || sender || '').toLowerCase();
+                  const searchText = `${subjectLower} ${senderLower}`;
+                  if (IGNORED_SUBJECT_PATTERNS.some(p => p.test(searchText))) {
+                    classification = 'ignored';
+                  }
+                  const skipPrefix = /^\s*(Cursos|Taller)/i;
+                  if (classification !== 'ignored') {
+                    if (String(subject || '').trim() && skipPrefix.test(String(subject))) classification = 'ignored';
+                    else if (/newsletter/i.test(subject) || /newsletter/i.test(rawSender)) classification = 'ignored';
+                    else if (name && String(name).trim().toLowerCase() === 'soluciones it aps') classification = 'ignored';
+                  }
+
                   let bodyForDb = "";
                   let bodyBinary = "";
                   try {
@@ -634,6 +656,7 @@ router.post("/fetch-emails", async (req, res) => {
                   const parts = extractMessageParts(bodyBinary);
                   const info = insertEmailStmt.run(sender, domain, subject, dateValue, classification, fetchedAt, rawSender, bodyForDb, normalizeStoredEmailText(parts.text), normalizeStoredEmailText(parts.html), accountId, 0, null);
                   const emailId = info && info.lastInsertRowid ? info.lastInsertRowid : null;
+                  if (info && info.changes > 0) savedCount++; else skippedCount++;
                   if (emailId && parts.attachments && parts.attachments.length) {
                     const attachDir = path.join(__dirname, '..', 'db', 'attachments');
                     try { if (!fs.existsSync(attachDir)) fs.mkdirSync(attachDir, { recursive: true }); } catch (_) {}
@@ -643,14 +666,11 @@ router.post("/fetch-emails", async (req, res) => {
                         const fname = `${emailId}_${Date.now()}_${idx}_${safe}`;
                         const full = path.join(attachDir, fname);
                         fs.writeFileSync(full, att.data);
-                        insertAttachmentStmt.run(emailId, att.filename, att.contentType, full, new Date().toISOString());
+                        insertAttachmentStmt.run(emailId, att.filename, att.contentType, full, new Date().toISOString(), att.contentId || null);
                       } catch (_) {}
                     });
                   }
                   rows.push({ id: emailId, sender, raw_sender: rawSender, domain, subject, date: dateValue, classification, fetched_at: fetchedAt });
-                  const jobState = fetchJobs.get(jobId) || {};
-                  jobState.fetched = rows.length;
-                  fetchJobs.set(jobId, jobState);
                   console.log(`[fetch:${jobId}] Retry SUCCESS for UID ${singleUid}`);
                 }
               } catch (retryErr) {
@@ -659,7 +679,7 @@ router.post("/fetch-emails", async (req, res) => {
             }
           }
 
-          console.log(`[fetch] done. saved=${savedCount} skipped=${skippedCount} total=${processedCount}`);
+          console.log(`[fetch] done. saved: ${savedCount}, skipped: ${skippedCount}, total processed: ${processedCount}`);
         }
       } finally {
         try { lock.release(); } catch (_) {}
@@ -727,6 +747,24 @@ router.get('/emails/counts', (req, res) => {
   }
 });
 
+function resolveCidReferences(html, emailId) {
+  if (!html) return html;
+  const attachments = selectAttachmentsByEmailStmt.all(emailId);
+  
+  let resolved = html.replace(
+    /src=["']cid:([^"']+)["']/gi,
+    (match, cid) => {
+      const cleanCid = cid.trim();
+      const found = attachments.find(a => a.content_id === cleanCid);
+      if (found) {
+        return `src="/api/attachments/${found.id}"`;
+      }
+      return `src="" data-cid-missing="${cleanCid}" alt="Imagen no disponible"`;
+    }
+  );
+  return resolved;
+}
+
 // GET /api/emails/:id
 router.get("/emails/:id", (req, res) => {
   try {
@@ -735,7 +773,12 @@ router.get("/emails/:id", (req, res) => {
     const accountId = req.query.account_id || 'default';
     const row = selectByIdStmt.get(id, accountId);
     if (!row) return res.status(404).json({ error: "email not found" });
-    return res.json(normalizeEmailRowForResponse(row));
+    
+    const normalizedRow = normalizeEmailRowForResponse(row);
+    if (normalizedRow.html) {
+      normalizedRow.html = resolveCidReferences(normalizedRow.html, id);
+    }
+    return res.json(normalizedRow);
   } catch (error) {
     return res.status(500).json({ error: error.message || "Failed to load email" });
   }
@@ -843,6 +886,13 @@ router.get('/fetch-status/:id', (req, res) => {
     let percent = limit > 0 ? Math.min(100, Math.round((fetched / limit) * 100)) : 0;
     if (job.status === 'done') percent = 100;
 
+    // Return hasNewBatch and then clear it so frontend only refreshes once per batch
+    const hasNewBatch = !!job.hasNewBatch;
+    if (hasNewBatch) {
+      job.hasNewBatch = false;
+      fetchJobs.set(id, job);
+    }
+
     return res.json({
       id: job.id,
       status: job.status,
@@ -854,6 +904,7 @@ router.get('/fetch-status/:id', (req, res) => {
       batchSize: job.batchSize || 50,
       totalBatches: job.totalBatches || 30,
       currentBatch: job.currentBatch || 0,
+      hasNewBatch,
       startedAt: job.startedAt,
       finishedAt: job.finishedAt || null,
       lastError: job.lastError || null,
@@ -866,6 +917,7 @@ router.get('/fetch-status/:id', (req, res) => {
 // POST /api/reclassify-spam
 router.post('/reclassify-spam', (req, res) => {
   try {
+    const accountId = req.query.account_id || req.body.account_id || 'default';
     const adminKeywords = [
       'factura','facturación','facturacion','pago','pagos','recibo','cuenta',
       'administracion','administración','tesoreria','tesorería','finanzas',
@@ -922,8 +974,8 @@ router.post('/reclassify-spam', (req, res) => {
 
     // First pass: move admin emails that are actually promos to ignored
     const adminRows = db.prepare(
-      "SELECT id, subject, coalesce(text,'') as text FROM emails WHERE classification = 'administracion'"
-    ).all();
+      "SELECT id, subject, coalesce(text,'') as text FROM emails WHERE classification = 'administracion' AND account_id = ?"
+    ).all(accountId);
 
     const moveToIgnored = db.prepare(
       "UPDATE emails SET classification = 'ignored', secondary_classification = NULL WHERE id = ?"
@@ -943,7 +995,7 @@ router.post('/reclassify-spam', (req, res) => {
     moveTx(adminRows);
 
     // Then continue with spam reclassification
-    const spamRows = db.prepare("SELECT id, subject, sender, raw_sender, coalesce(text,'') as text FROM emails WHERE classification = 'spam'").all();
+    const spamRows = db.prepare("SELECT id, subject, sender, raw_sender, coalesce(text,'') as text FROM emails WHERE classification = 'spam' AND account_id = ?").all(accountId);
     if (!spamRows || !spamRows.length) {
       return res.json({ scanned: 0, adminCount: 0, soporteCount: 0, ventasCount: 0, instalacionesCount: 0, movedToIgnored: movedToIgnoredCount });
     }
@@ -953,6 +1005,8 @@ router.post('/reclassify-spam', (req, res) => {
     let soporteCount = 0;
     let ventasCount = 0;
     let instalacionesCount = 0;
+
+    const deptMatchCounts = {};
 
     const tx = db.transaction((rows) => {
       for (const r of rows) {
@@ -984,13 +1038,60 @@ router.post('/reclassify-spam', (req, res) => {
     });
     tx(spamRows);
 
+    // Second pass: reclassify remaining still-spam emails using department keywords from DB
+    try {
+      const departments = db.prepare(
+        "SELECT id, name, keywords FROM departments WHERE account_id = ?"
+      ).all(accountId);
+
+      if (departments && departments.length > 0) {
+        // Collect all builtin classification names that are already handled above
+        const builtinNames = new Set(['administracion', 'soporte_tecnico', 'ventas', 'instalaciones']);
+
+        // Only consider user-defined departments (not builtin ones, already handled)
+        const userDepts = departments.filter(d => !builtinNames.has(d.name));
+
+        if (userDepts.length > 0) {
+          // Get emails still classified as spam after the first pass
+          const remainingSpam = db.prepare(
+            "SELECT id, subject, sender, raw_sender, coalesce(text,'') as text FROM emails WHERE classification = 'spam' AND account_id = ?"
+          ).all(accountId);
+
+          const deptUpdateStmt = db.prepare("UPDATE emails SET classification = ? WHERE id = ?");
+
+          const deptTx = db.transaction((rows) => {
+            for (const r of rows) {
+              const txt = `${r.subject || ''} ${r.sender || ''} ${r.raw_sender || ''} ${r.text || ''}`.toLowerCase();
+              for (const dept of userDepts) {
+                let kwList;
+                try {
+                  kwList = JSON.parse(dept.keywords || '[]');
+                } catch (_) {
+                  kwList = [];
+                }
+                if (kwList.length > 0 && kwList.some(kw => txt.includes(String(kw).toLowerCase()))) {
+                  deptUpdateStmt.run(dept.name, r.id);
+                  deptMatchCounts[dept.name] = (deptMatchCounts[dept.name] || 0) + 1;
+                  break; // first matching department wins
+                }
+              }
+            }
+          });
+          deptTx(remainingSpam);
+        }
+      }
+    } catch (deptErr) {
+      console.error('[reclassify] department keyword matching failed:', deptErr.message);
+    }
+
     return res.json({
       scanned: spamRows.length,
       adminCount,
       soporteCount,
       ventasCount,
       instalacionesCount,
-      movedToIgnored: movedToIgnoredCount
+      movedToIgnored: movedToIgnoredCount,
+      ...deptMatchCounts
     });
   } catch (err) {
     console.error('reclassify-spam failed', err && err.message);

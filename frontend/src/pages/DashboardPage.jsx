@@ -5,6 +5,12 @@ import EmailTable from '../components/EmailTable';
 import RulesPanel from '../components/RulesPanel';
 import Swal from 'sweetalert2';
 import withReactContent from 'sweetalert2-react-content';
+import {
+  requestNotificationPermission,
+  notifyFetchComplete,
+  notifyNewEmailsAvailable,
+  isNotificationSupported
+} from '../services/notifications';
 
 const MySwal = withReactContent(Swal);
 
@@ -50,14 +56,45 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
     setRefreshNotif(null);
   }
 
+  const [fetchSummary, setFetchSummary] = useState(null);
+  const FETCH_SUMMARY_AUTO_CLOSE_MS = 30000;
+  const fetchSummaryTimer = useRef(null);
+
+  function showFetchSummary(message) {
+    if (fetchSummaryTimer.current) {
+      clearTimeout(fetchSummaryTimer.current);
+    }
+    setFetchSummary(message);
+    fetchSummaryTimer.current = setTimeout(() => {
+      setFetchSummary(null);
+    }, FETCH_SUMMARY_AUTO_CLOSE_MS);
+  }
+
+  function closeFetchSummary() {
+    if (fetchSummaryTimer.current) {
+      clearTimeout(fetchSummaryTimer.current);
+    }
+    setFetchSummary(null);
+  }
+
   // Cleanup timer on unmount
   useEffect(() => {
     return () => {
       if (refreshNotifTimer.current) {
         clearTimeout(refreshNotifTimer.current);
       }
+      if (fetchSummaryTimer.current) {
+        clearTimeout(fetchSummaryTimer.current);
+      }
     };
   }, []);
+
+  // Request notification permission on mount
+  useEffect(() => {
+    if (!isNotificationSupported()) return;
+    requestNotificationPermission().then(setNotifPermission);
+  }, []);
+
   const [selectedEmailId, setSelectedEmailId] = useState(null);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [selectedLoading, setSelectedLoading] = useState(false);
@@ -90,6 +127,11 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
     }
   });
 
+  // Notification permission state
+  const [notifPermission, setNotifPermission] = useState(
+    isNotificationSupported() ? Notification.permission : 'unsupported'
+  );
+
   const loadingRef = useRef(false);
 
   const accountId = credentials?.account_id;
@@ -119,7 +161,7 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
     setReclassifyMessage(null);
     setReclassifyResult(null);
     try {
-      const result = await reclassifySpam();
+      const result = await reclassifySpam(accountId);
       setReclassifyResult(result);
       await loadEmails();
       await loadCounts();
@@ -182,27 +224,41 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
     }
   }
 
-  async function pollFetchJob(jobId) {
+  async function pollFetchJob(jobId, accountId) {
+    let lastSeenBatch = 0;
+
     return new Promise((resolve) => {
       fetchPollRef.current = setInterval(async () => {
         try {
-          const st = await getFetchStatus(jobId);
-          setFetchProgress(st);
+          const job = await getFetchStatus(jobId);
 
-          if (st.status === 'done' || st.status === 'failed') {
+          setFetchProgress({
+            currentBatch: job.currentBatch || 0,
+            totalBatches: job.totalBatches || 30,
+            fetched: job.fetched || 0,
+            percent: job.percent || 0,
+            status: job.status
+          });
+
+          // A new batch completed since our last check — refresh now
+          if (job.currentBatch && job.currentBatch > lastSeenBatch) {
+            lastSeenBatch = job.currentBatch;
+            try {
+              await reclassifySpam(accountId).catch(() => {});
+              await loadEmails();
+              await loadCounts();
+            } catch (err) {
+              console.error('[poll] progressive refresh failed:', err.message);
+            }
+          }
+
+          if (job.status === 'done' || job.status === 'failed') {
             clearInterval(fetchPollRef.current);
             fetchPollRef.current = null;
-            setFetchJobId(null);
-            if (st.status === 'done') {
-              const summary = `✓ Fetch completo: ${st.saved || 0} guardados, ${st.skipped || 0} duplicados omitidos`;
-              setFetchProgress({ ...st, summary });
-            } else {
-              setFetchError(st.lastError || 'Fetch failed');
-            }
-            resolve(st);
+            resolve(job);
           }
-        } catch (e) {
-          const msg = e && e.message ? String(e.message).toLowerCase() : '';
+        } catch (err) {
+          const msg = err && err.message ? String(err.message).toLowerCase() : '';
           if (msg.includes('job not found') || msg.includes('404')) {
             clearInterval(fetchPollRef.current);
             fetchPollRef.current = null;
@@ -212,33 +268,57 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
             resolve(null);
             return;
           }
+          console.error('[poll] error:', err.message);
         }
       }, 2000);
     });
   }
 
-  async function handleFetch() {
-    setFetchLoading(true);
-    setFetchError(null);
-    setFetchProgress({ fetched: 0, limit: 1500, status: 'starting' });
+  async function handleFetchEmails() {
     try {
-      const resp = await fetchEmails(credentials, 1500);
-      const jobId = resp.jobId;
+      setFetchLoading(true);
+      setFetchError(null);
+      setFetchProgress({ fetched: 0, limit: 1500, status: 'starting' });
+      
+      const { jobId } = await fetchEmails(credentials, 1500);
       setFetchJobId(jobId);
-      const result = await pollFetchJob(jobId);
-      setFetchLoading(false);
-      if (result && result.status === 'done') {
+
+      const job = await pollFetchJob(jobId, accountId);
+
+      if (job && job.status === 'done') {
+        setReclassifyLoading(true);
+        let reclassifyResult = null;
+        try {
+          reclassifyResult = await reclassifySpam(accountId);
+          setReclassifyResult(reclassifyResult);
+        } catch (err) {
+          console.error('[fetch] final reclassify failed:', err.message);
+        }
+        setReclassifyLoading(false);
+
         await loadEmails();
         await loadCounts();
-        // Refresh the date range label after fetch
+        
         try {
           const range = await getDateRange();
           setDateRangeLabel(range.label);
         } catch (_) {}
+
+        showFetchSummary(`✓ Fetch completo: ${job.saved || 0} guardados, ${job.skipped || 0} duplicados omitidos`);
+        
+        // Ensure browser notification fires
+        if (typeof notifyFetchComplete === 'function') {
+          notifyFetchComplete(job.saved || 0, job.skipped || 0, job.saved || 0);
+        }
+      } else if (job && job.status === 'failed') {
+        setFetchError(job.lastError || 'Fetch failed');
       }
     } catch (err) {
-      setFetchError(err.message);
+      console.error('[fetch] failed to start:', err.message);
+      setFetchError(err.message || '✗ No se pudo iniciar el fetch.');
+    } finally {
       setFetchLoading(false);
+      setFetchJobId(null);
       setFetchProgress(null);
     }
   }
@@ -266,6 +346,11 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
         await loadCounts();
         await handleReclassify();
         const savedCount = done.saved || 0;
+        
+        if (savedCount > 0) {
+          notifyNewEmailsAvailable(savedCount);
+        }
+
         showRefreshNotif(
           `🔄 Actualización completada — ${savedCount} correos nuevos cargados`
         );
@@ -277,7 +362,7 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
     }
   }
 
-  // Auto-refresh every 10 minutes
+  // Auto-refresh every 3 minutes
   const isFetching = fetchLoading || !!fetchJobId;
   useEffect(() => {
     if (!credentials) return;
@@ -285,7 +370,7 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
       if (!isFetching) {
         handleAutoRefresh();
       }
-    }, 600000);
+    }, 180000); // 3 minutes
     return () => clearInterval(interval);
   }, [credentials, isFetching]);
 
@@ -359,48 +444,47 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
               )}
 
               {data.attachments && data.attachments.length > 0 && (
-                <div className="attachments" style={{ marginTop: '20px', borderTop: '1px solid #ddd', paddingTop: '15px' }}>
-                  <h4 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>Attachments</h4>
-                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                    {data.attachments.map((a) => {
-                      const ct = (a.content_type || '').toLowerCase();
-                      const inlineTypes = ['application/pdf', 'image/png', 'image/jpg', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml', 'image/bmp', 'image/tiff'];
-                      const isInline = inlineTypes.includes(ct) || ct.startsWith('image/');
-                      return (
-                        <li key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', padding: '8px', background: '#f8f9fa', borderRadius: '4px', border: '1px solid #e9ecef' }}>
-                          <strong style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.filename}</strong>
-                          {isInline ? (
-                            <a className="btn btn-sm btn-secondary" href={getAttachmentUrl(a.id)} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
-                              View
-                            </a>
-                          ) : (
-                            <button
-                              className="btn btn-sm btn-primary"
-                              style={{ cursor: 'pointer' }}
-                              onClick={async (e) => {
-                                e.preventDefault();
-                                try {
-                                  const blob = await downloadAttachment(a.id);
-                                  const url = URL.createObjectURL(blob);
-                                  const link = document.createElement('a');
-                                  link.href = url;
-                                  link.download = a.filename || 'attachment';
-                                  document.body.appendChild(link);
-                                  link.click();
-                                  link.remove();
-                                  setTimeout(() => URL.revokeObjectURL(url), 60000);
-                                } catch (err) {
-                                  MySwal.fire('Download failed', err && err.message ? err.message : String(err), 'error');
-                                }
-                              }}
-                            >
-                              Download
-                            </button>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
+                <div className="email-attachments">
+                  <span className="email-attachments-title">Adjuntos:</span>
+                  {data.attachments.map(att => (
+                    <a
+                      key={att.id}
+                      href={getAttachmentUrl(att.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="email-attachment-link"
+                    >
+                      📎 {att.filename}
+                    </a>
+                  ))}
+                  <style>{`
+                    .email-attachments {
+                      display: flex;
+                      flex-wrap: wrap;
+                      gap: 8px;
+                      align-items: center;
+                      margin-top: 12px;
+                      padding-top: 12px;
+                      border-top: 1px solid var(--border, #2a3039);
+                    }
+                    .email-attachments-title {
+                      font-size: 12px;
+                      color: var(--muted, #9ca9b8);
+                      margin-right: 4px;
+                    }
+                    .email-attachment-link {
+                      font-size: 13px;
+                      color: var(--accent, #59c3c3);
+                      text-decoration: none;
+                      padding: 4px 10px;
+                      border: 1px solid var(--border, #2a3039);
+                      border-radius: 6px;
+                      transition: border-color 0.15s;
+                    }
+                    .email-attachment-link:hover {
+                      border-color: var(--accent, #59c3c3);
+                    }
+                  `}</style>
                 </div>
               )}
             </div>
@@ -480,14 +564,6 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
           }
           if (!allowed.has(name)) node.removeAttribute(attr.name);
         });
-      });
-
-      // Replace cid: images with a placeholder message
-      doc.querySelectorAll('img[src^="cid:"]').forEach((img) => {
-        const placeholder = doc.createElement('div');
-        placeholder.className = 'email-image-blocked';
-        placeholder.innerHTML = '<span class="email-image-blocked-icon">🖼️</span><span class="email-image-blocked-text">Image not available: this image is embedded in the email and cannot be displayed externally.</span>';
-        img.parentNode.replaceChild(placeholder, img);
       });
 
       // For external images, add an onerror handler to show a placeholder if the image fails to load
@@ -764,12 +840,12 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
               </div>
             </div>
           )}
-          {fetchProgress && fetchProgress.summary && (
-            <span className="reclassify-msg">{fetchProgress.summary}</span>
+          {fetchSummary && (
+            <span className="reclassify-msg">{fetchSummary}</span>
           )}
           <button
             className="btn btn-primary btn-sm"
-            onClick={handleFetch}
+            onClick={handleFetchEmails}
             disabled={fetchLoading}
           >
             {fetchLoading ? 'Fetching...' : 'Fetch emails'}
@@ -796,6 +872,12 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
 
       {/* Main content */}
       <main className="dash-content">
+        {typeof notifPermission !== 'undefined' && notifPermission === 'default' && (
+          <div className="notif-permission-hint">
+            💡 Activa las notificaciones del navegador para enterarte cuando lleguen correos nuevos, incluso si esta pestaña no está activa.
+          </div>
+        )}
+
         {/* Section 2: Filter controls */}
         <FilterBar
           filterClass={filterClass}
@@ -811,6 +893,10 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
           clearError={clearError}
           departments={departments}
           onDepartmentsChange={loadDepartments}
+          onEmailsReclassified={async () => {
+            await loadEmails();
+            await loadCounts();
+          }}
           counts={emailCounts}
           accountId={accountId}
         />
@@ -840,7 +926,14 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
         )}
 
         {/* Section 3: Email table */}
-          <EmailTable emails={sortedEmails} loading={emailsLoading} fetchStarted={fetchLoading || !!fetchJobId} filterClass={filterClass} onRowClick={openEmail} />
+        {(fetchLoading || !!fetchJobId) && fetchProgress && (
+          <div className="progressive-load-indicator">
+            Cargando correos... lote {fetchProgress.currentBatch || 0}/{fetchProgress.totalBatches || 30}
+            — {fetchProgress.fetched || 0} procesados ({fetchProgress.percent || 0}%)
+            {reclassifyLoading && ' · organizando...'}
+          </div>
+        )}
+        <EmailTable emails={sortedEmails} loading={emailsLoading} fetchStarted={fetchLoading || !!fetchJobId} filterClass={filterClass} onRowClick={openEmail} />
 
         {/* Section 4: Collapsible rules panel */}
         <RulesPanel />
