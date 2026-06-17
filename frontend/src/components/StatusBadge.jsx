@@ -14,9 +14,9 @@ export default function StatusBadge({
       border: '1px solid rgba(255, 107, 107, 0.3)'
     },
     ignored: {
-      background: 'rgba(20, 20, 20, 0.15)',
-      color: '#1a1a1a',
-      border: '1px solid rgba(0, 0, 0, 0.4)'
+      background: 'rgba(255, 255, 255, 0.08)',
+      color: '#ffffff',
+      border: '1px solid rgba(255, 255, 255, 0.25)'
     },
     read: {
       background: 'rgba(250, 204, 21, 0.12)',

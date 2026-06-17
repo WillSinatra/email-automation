@@ -2,6 +2,8 @@ const express = require('express')
 const router = express.Router()
 const db = require('../db/database')
 const crypto = require('crypto')
+const { validateDomainMiddleware } = require('../middleware/validateDomain')
+const { encrypt, decrypt } = require('../services/crypto')
 
 const MAX_ACCOUNTS = 7
 
@@ -18,9 +20,10 @@ router.get('/', (req, res) => {
 })
 
 // POST /api/accounts — register a new account (max 7)
-router.post('/', (req, res) => {
+// If a password is provided, it is encrypted before storage for auto-refresh purposes.
+router.post('/', validateDomainMiddleware, (req, res) => {
   try {
-    const { email, host, port, label } = req.body || {}
+    const { email, host, port, label, password } = req.body || {}
     if (!email) return res.status(400).json({ error: 'email is required' })
 
     const count = db.prepare('SELECT COUNT(*) as c FROM accounts').get()
@@ -42,9 +45,11 @@ router.post('/', (req, res) => {
     const isAdmin = String(email).toLowerCase().trim() === 
                     'administracion@netlatin.com.ar' ? 1 : 0
 
+    const encryptedPassword = password ? encrypt(password) : null
+
     db.prepare(`
-      INSERT INTO accounts (id, email, host, port, label, is_admin, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO accounts (id, email, host, port, label, is_admin, created_at, encrypted_password)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       String(email).toLowerCase().trim(),
@@ -52,7 +57,8 @@ router.post('/', (req, res) => {
       Number(port) || 993,
       label || email,
       isAdmin,
-      now
+      now,
+      encryptedPassword
     )
 
     // If admin account, seed all default departments for it
@@ -60,10 +66,29 @@ router.post('/', (req, res) => {
       seedAdminDepartments(id)
     }
 
+    // Never return encrypted_password in the response
     const created = db.prepare(
       'SELECT id, email, host, port, label, is_admin, created_at FROM accounts WHERE id = ?'
     ).get(id)
     return res.status(201).json(created)
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/accounts/reset — clear all accounts (session wipe)
+router.delete('/reset', (req, res) => {
+  try {
+    const accounts = db.prepare('SELECT id FROM accounts').all()
+    const tx = db.transaction((rows) => {
+      for (const acc of rows) {
+        db.prepare('DELETE FROM emails WHERE account_id = ?').run(acc.id)
+        db.prepare('DELETE FROM departments WHERE account_id = ?').run(acc.id)
+      }
+      db.prepare('DELETE FROM accounts').run()
+    })
+    tx(accounts)
+    return res.json({ success: true })
   } catch (err) {
     return res.status(500).json({ error: err.message })
   }
@@ -172,4 +197,22 @@ function seedAdminDepartments(accountId) {
   tx(depts)
 }
 
+/**
+ * Internal-only helper: retrieve and decrypt credentials for a given account.
+ * Used by the auto-refresh background job — never exposed via API.
+ */
+function getDecryptedCredentials(accountId) {
+  const account = db.prepare(
+    'SELECT email, host, port, encrypted_password FROM accounts WHERE id = ?'
+  ).get(accountId)
+  if (!account || !account.encrypted_password) return null
+  return {
+    user: account.email,
+    host: account.host,
+    port: account.port,
+    password: decrypt(account.encrypted_password)
+  }
+}
+
 module.exports = router
+module.exports.getDecryptedCredentials = getDecryptedCredentials

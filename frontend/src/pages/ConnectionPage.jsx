@@ -39,7 +39,7 @@ export default function ConnectionPage({ onConnect, onAccountCreated, account })
     const { host, port, user, password } = form;
 
     if (!host || !port || !user || !password) {
-      setError('Please complete all fields.');
+      setError('Por favor, completa todos los campos.');
       return;
     }
 
@@ -132,7 +132,7 @@ export default function ConnectionPage({ onConnect, onAccountCreated, account })
             className="btn btn-primary btn-full"
             disabled={loading}
           >
-            {loading ? 'Connecting...' : 'Connect'}
+            {loading ? 'Conectando...' : 'Conectar'}
           </button>
         </form>
       </div>

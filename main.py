@@ -237,7 +237,7 @@ HTML_PAGE = """<!doctype html>
 			};
 
 			if (!payload.host || !payload.port || !payload.username || !payload.password || !payload.protocol) {
-				inlineError.textContent = 'Please complete all fields before connecting.';
+inlineError.textContent = 'Por favor, completa todos los campos.';
 				return;
 			}
 
