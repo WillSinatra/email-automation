@@ -202,6 +202,8 @@ function extractMessageParts(rawSource) {
     const pre = src.slice(Math.max(0, m.index - 200), m.index + 0);
     const ctMatch = pre.match(/Content-Type:\s*([^\r\n;]+)(?:;\s*name="?([^\";\r\n]+)"?)?/i);
     const contentType = ctMatch ? ctMatch[1].trim() : 'application/octet-stream';
+    const cidMatch = pre.match(/Content-ID:\s*<([^>]+)>/i);
+    const contentId = cidMatch ? cidMatch[1].trim() : null;
     const encMatch = pre.match(/Content-Transfer-Encoding:\s*([^\r\n]+)/i);
     const enc = encMatch ? encMatch[1].toLowerCase().trim() : '';
     let dataBuf = Buffer.from('', 'utf8');
@@ -212,9 +214,88 @@ function extractMessageParts(rawSource) {
     } else {
       dataBuf = Buffer.from(body, 'binary');
     }
-    if (filename && dataBuf.length > 0) attachments.push({ filename: filename.trim(), contentType, data: dataBuf });
+    // Use filename if present, otherwise generate one from content type
+    const finalFilename = filename
+      ? filename.trim()
+      : `inline_image_${Date.now()}.${(contentType.split('/')[1] || 'jpg')}`;
+    if (dataBuf.length > 0) {
+      console.log('[attachment-extract]', {
+        filename: finalFilename,
+        contentType,
+        contentId: contentId || '(none)',
+        sizeBytes: dataBuf.length,
+        encoding: enc || '(unknown)'
+      });
+      if (dataBuf.length < 100 && (contentType.startsWith('image/') || contentType === 'application/pdf')) {
+        console.warn('[attachment-extract] SUSPICIOUSLY SMALL FILE — likely decode failure:', finalFilename, dataBuf.length, 'bytes');
+      }
+      attachments.push({
+        filename: finalFilename,
+        contentType,
+        data: dataBuf,
+        contentId
+      });
+    }
   }
+
+  // Fallback pass: catch inline images with Content-Type: image/* and Content-Disposition: inline
+  // that may not have been captured by the main dispRegex loop (e.g. Apple Mail / iPhone emails
+  // with no Content-ID header and header ordering differences).
+  const inlineImageRegex = /Content-Type:\s*(image\/[^\r\n;]+)(?:;\s*name=([^\r\n;]+))?\r?\n(?:[^\r\n]*\r?\n)*?Content-Disposition:\s*inline[^\r\n]*\r?\n(?:[^\r\n]*\r?\n)*?Content-Transfer-Encoding:\s*([^\r\n]+)\r?\n\r?\n([\s\S]*?)(?=\r\n--|\r\nContent-Type:|$)/gi;
+  let m2;
+  while ((m2 = inlineImageRegex.exec(src))) {
+    const contentType = m2[1].trim();
+    const rawFilename = m2[2] ? m2[2].replace(/^"|"$/g, '').trim() : null;
+    const enc = m2[3].toLowerCase().trim();
+    const rawBody = m2[4];
+    let dataBuf;
+    if (enc === 'base64') {
+      try { dataBuf = Buffer.from(rawBody.replace(/\r?\n/g, ''), 'base64'); } catch (_) { continue; }
+    } else {
+      dataBuf = Buffer.from(rawBody, 'binary');
+    }
+    if (dataBuf.length === 0) continue;
+    // Avoid duplicates already captured by the main dispRegex loop
+    const isDuplicate = attachments.some(a =>
+      a.data.length === dataBuf.length &&
+      a.contentType === contentType
+    );
+    if (isDuplicate) continue;
+    const finalFilename = rawFilename || `inline_image_${Date.now()}.${contentType.split('/')[1] || 'jpg'}`;
+    console.log('[attachment-extract]', {
+      filename: finalFilename,
+      contentType,
+      contentId: '(none — fallback inline capture)',
+      sizeBytes: dataBuf.length,
+      encoding: enc || '(unknown)'
+    });
+    if (dataBuf.length < 100 && (contentType.startsWith('image/') || contentType === 'application/pdf')) {
+      console.warn('[attachment-extract] SUSPICIOUSLY SMALL FILE — likely decode failure:', finalFilename, dataBuf.length, 'bytes');
+    }
+    attachments.push({
+      filename: finalFilename,
+      contentType,
+      data: dataBuf,
+      contentId: null
+    });
+  }
+
   result.attachments = attachments;
+
+  // If the body text is empty/blank but we have image attachments, show a friendly placeholder
+  if (!result.text || result.text.trim().length === 0) {
+    if (result.attachments && result.attachments.length > 0) {
+      const imageCount = result.attachments.filter(
+        a => a.contentType && a.contentType.startsWith('image/')
+      ).length;
+      if (imageCount > 0) {
+        result.text = imageCount === 1
+          ? '[Este correo contiene una imagen adjunta]'
+          : `[Este correo contiene ${imageCount} imágenes adjuntas]`;
+      }
+    }
+  }
+
   return result;
 }
 
@@ -565,8 +646,28 @@ router.post("/fetch-emails", async (req, res) => {
                         const fname = `${emailId}_${Date.now()}_${idx}_${safe}`;
                         const full = path.join(attachDir, fname);
                         fs.writeFileSync(full, att.data);
+
+                        const stats = fs.statSync(full);
+                        console.log('[attachment-save] OK:', {
+                          emailId,
+                          originalFilename: att.filename,
+                          savedAs: fname,
+                          sizeOnDisk: stats.size,
+                          contentId: att.contentId || '(none)'
+                        });
+
+                        if (stats.size !== att.data.length) {
+                          console.warn('[attachment-save] SIZE MISMATCH — possible write corruption:', fname);
+                        }
+
                         insertAttachmentStmt.run(emailId, att.filename, att.contentType, full, new Date().toISOString(), att.contentId || null);
-                      } catch (_) {}
+                      } catch (err) {
+                        console.error('[attachment-save] FAILED:', {
+                          emailId,
+                          filename: att.filename,
+                          error: err && err.message
+                        });
+                      }
                     });
                   }
 
@@ -666,8 +767,28 @@ router.post("/fetch-emails", async (req, res) => {
                         const fname = `${emailId}_${Date.now()}_${idx}_${safe}`;
                         const full = path.join(attachDir, fname);
                         fs.writeFileSync(full, att.data);
+
+                        const stats = fs.statSync(full);
+                        console.log('[attachment-save] OK:', {
+                          emailId,
+                          originalFilename: att.filename,
+                          savedAs: fname,
+                          sizeOnDisk: stats.size,
+                          contentId: att.contentId || '(none)'
+                        });
+
+                        if (stats.size !== att.data.length) {
+                          console.warn('[attachment-save] SIZE MISMATCH — possible write corruption:', fname);
+                        }
+
                         insertAttachmentStmt.run(emailId, att.filename, att.contentType, full, new Date().toISOString(), att.contentId || null);
-                      } catch (_) {}
+                      } catch (err) {
+                        console.error('[attachment-save] FAILED:', {
+                          emailId,
+                          filename: att.filename,
+                          error: err && err.message
+                        });
+                      }
                     });
                   }
                   rows.push({ id: emailId, sender, raw_sender: rawSender, domain, subject, date: dateValue, classification, fetched_at: fetchedAt });
@@ -757,12 +878,36 @@ function resolveCidReferences(html, emailId) {
       const cleanCid = cid.trim();
       const found = attachments.find(a => a.content_id === cleanCid);
       if (found) {
+        console.log('[cid-resolve] matched:', cleanCid, '->', found.filename);
         return `src="/api/attachments/${found.id}"`;
       }
+      console.warn('[cid-resolve] NO MATCH for cid:', cleanCid, '- available content_ids:',
+        attachments.map(a => a.content_id || '(none)'));
       return `src="" data-cid-missing="${cleanCid}" alt="Imagen no disponible"`;
     }
   );
   return resolved;
+}
+
+function rewriteExternalImages(html) {
+  if (!html) return html;
+  // Rewrite external http/https image src URLs to go through our proxy
+  // This bypasses CORS/hotlink protection from webmail providers (Cause A).
+  // Skip src that are already cid: resolved (attachments) or already proxied.
+  return html.replace(
+    /src=["'](https?:\/\/[^"']+)["']/gi,
+    (match, url) => {
+      // Skip if already a local reference (attachment, proxy, data URI)
+      if (url.includes('/api/attachments/') || url.includes('/api/image-proxy')) {
+        return match;
+      }
+      console.log('[rewriteExternalImages] proxying external image:', url.slice(0, 100));
+      const proxiedUrl = `/api/image-proxy?url=${encodeURIComponent(url)}`;
+      // Add an onerror so if the proxy also fails (dead/auth-gated URL),
+      // the client shows a clear Spanish message instead of a broken icon
+      return `src="${proxiedUrl}" onerror="console.log('[img-proxy] proxy failed for', '${encodeURIComponent(url)}');this.outerHTML='<span class=\\'image-blocked\\'>Esta imagen no se pudo cargar porque el remitente la subi\u00f3 a un servicio externo (no fue adjuntada al correo). El enlace puede haber expirado o requerir acceso a la cuenta original del remitente. Ped\u00ed al remitente que reenv\u00ede la imagen como archivo adjunto.</span>'"`;
+    }
+  );
 }
 
 // GET /api/emails/:id
@@ -777,6 +922,7 @@ router.get("/emails/:id", (req, res) => {
     const normalizedRow = normalizeEmailRowForResponse(row);
     if (normalizedRow.html) {
       normalizedRow.html = resolveCidReferences(normalizedRow.html, id);
+      normalizedRow.html = rewriteExternalImages(normalizedRow.html);
     }
     return res.json(normalizedRow);
   } catch (error) {
@@ -790,9 +936,9 @@ router.get("/emails", (req, res) => {
     const { classification } = req.query;
     const accountId = req.query.account_id || 'default';
     if (classification) {
-      const accepted = ["trusted", "spam", "ignored", "administracion", "reclamos", "soporte_tecnico", "ventas"];
+      const accepted = ["trusted", "spam", "ignored", "enviado", "administracion", "reclamos", "soporte_tecnico", "ventas"];
       if (!accepted.includes(classification)) {
-        return res.status(400).json({ error: "classification must be trusted, spam, ignored, administracion, reclamos, soporte_tecnico or ventas" });
+        return res.status(400).json({ error: "classification must be trusted, spam, ignored, enviado, administracion, reclamos, soporte_tecnico or ventas" });
       }
       const cls = classification === 'reclamos' ? 'soporte_tecnico' : classification;
       const rows = selectByClassificationStmt.all(cls, cls, accountId);
@@ -825,7 +971,30 @@ router.get('/attachments/:id', (req, res) => {
     const row = db.prepare('SELECT id, filename, content_type, path FROM attachments WHERE id = ?').get(id);
     if (!row) return res.status(404).json({ error: 'attachment not found' });
     const filePath = row.path;
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'file missing' });
+    if (!fs.existsSync(filePath)) {
+      console.error('[attachment-serve] FILE MISSING ON DISK:', {
+        attachmentId: id,
+        expectedPath: filePath,
+        filename: row.filename
+      });
+      return res.status(404).json({ error: 'file missing' });
+    }
+
+    try {
+      const stats = fs.statSync(filePath);
+      console.log('[attachment-serve] serving:', {
+        attachmentId: id,
+        filename: row.filename,
+        contentType: row.content_type,
+        sizeBytes: stats.size
+      });
+      if (stats.size === 0) {
+        console.warn('[attachment-serve] FILE IS EMPTY (0 bytes):', row.filename);
+      }
+    } catch (err) {
+      console.error('[attachment-serve] stat failed:', err.message);
+    }
+
     const contentType = row.content_type || 'application/octet-stream';
     res.setHeader('Content-Type', contentType);
     try {
@@ -858,6 +1027,83 @@ router.get('/attachments/:id', (req, res) => {
     stream.pipe(res);
   } catch (err) {
     return res.status(500).json({ error: err && err.message });
+  }
+});
+
+// GET /api/image-proxy — Proxy external images to bypass CORS/hotlink protection
+router.get('/image-proxy', async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'url is required' });
+    }
+
+    // Basic safety: only allow http/https URLs, prevent SSRF to internal IPs
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return res.status(400).json({ error: 'invalid url' });
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return res.status(400).json({ error: 'only http/https allowed' });
+    }
+    // Block obviously internal/private addresses
+    const blockedHosts = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'];
+    if (blockedHosts.includes(parsed.hostname)) {
+      return res.status(400).json({ error: 'blocked host' });
+    }
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; NetLatinMailViewer/1.0)'
+      },
+      redirect: 'follow'
+    });
+
+    console.log('[image-proxy] fetch result:', {
+      url: url.slice(0, 150),
+      status: response.status,
+      ok: response.ok,
+      contentType: response.headers.get('content-type')
+    });
+
+    if (!response.ok) {
+      console.warn('[image-proxy] UPSTREAM FAILED — likely CAUSE B/C (dead or auth-gated URL):', url.slice(0, 150), response.status);
+      return res.status(response.status).json({ error: 'upstream fetch failed' });
+    }
+
+    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    if (!contentType.startsWith('image/')) {
+      return res.status(400).json({ error: 'not an image' });
+    }
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+
+    const buffer = await response.arrayBuffer();
+    return res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error('[image-proxy] EXCEPTION — could be CORS-irrelevant network/DNS issue:', url.slice(0, 150), err.message);
+    return res.status(500).json({ error: 'failed to proxy image' });
+  }
+});
+
+// Temporary diagnostic endpoint to test if an image URL is fetchable from the backend
+// (to determine whether the failure is CORS/hotlink (Cause A) or a dead/auth-gated URL (Cause B/C))
+router.get('/debug-image-fetch', async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url) return res.status(400).json({ error: 'url query param required' });
+    const response = await fetch(url, { redirect: 'follow' });
+    return res.json({
+      status: response.status,
+      ok: response.ok,
+      contentType: response.headers.get('content-type'),
+      headers: Object.fromEntries(response.headers.entries())
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
 });
 

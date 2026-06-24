@@ -7,6 +7,7 @@ const BASE_FILTERS = [
   { name: 'spam', label: 'Spam', description: 'Emails classified as spam' },
   { name: 'ignored', label: 'Ignored', description: 'Emails marked as ignored (newsletters, etc.)' },
   { name: 'read', label: 'Read', description: 'Emails already read' },
+  { name: 'enviado', label: 'Enviados', description: 'Emails sent by you' },
 ];
 
 const BUILTIN_DEPT_FILTERS = [

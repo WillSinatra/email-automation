@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { fetchEmails, getFetchStatus, getEmails, clearEmails, getEmailById, getEmailAttachments, getAttachmentUrl, downloadAttachment, getDepartments, getEmailCounts, reclassifySpam, getDateRange, markAsRead } from '../services/api';
+import { fetchEmails, getFetchStatus, getEmails, clearEmails, getEmailById, getEmailAttachments, getAttachmentUrl, downloadAttachment, getDepartments, getEmailCounts, reclassifySpam, getDateRange, markAsRead, sendEmail } from '../services/api';
 import FilterBar from '../components/FilterBar';
 import EmailTable from '../components/EmailTable';
 import RulesPanel from '../components/RulesPanel';
+import ComposeModal from '../components/ComposeModal';
 import Swal from 'sweetalert2';
 import withReactContent from 'sweetalert2-react-content';
 import {
@@ -110,6 +111,9 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
   const [reclassifyLoading, setReclassifyLoading] = useState(false);
   const [reclassifyMessage, setReclassifyMessage] = useState(null);
   const [reclassifyResult, setReclassifyResult] = useState(null);
+
+  // Compose email modal state
+  const [isComposeOpen, setIsComposeOpen] = useState(false);
 
   // Custom departments from the server
   const [departments, setDepartments] = useState([]);
@@ -454,7 +458,7 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
                       rel="noopener noreferrer"
                       className="email-attachment-link"
                     >
-                      📎 {att.filename}
+                      {att.content_type && att.content_type.startsWith('image/') ? '🖼️' : '📎'} {att.filename}
                     </a>
                   ))}
                   <style>{`
@@ -483,6 +487,16 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
                     }
                     .email-attachment-link:hover {
                       border-color: var(--accent, #59c3c3);
+                    }
+                    .image-blocked {
+                      display: inline-block;
+                      padding: 12px 16px;
+                      background: rgba(255, 107, 107, 0.08);
+                      border: 1px dashed rgba(255, 107, 107, 0.3);
+                      border-radius: 8px;
+                      color: var(--muted, #9ca9b8);
+                      font-size: 13px;
+                      max-width: 400px;
                     }
                   `}</style>
                 </div>
@@ -566,18 +580,17 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
         });
       });
 
-      // For external images, add an onerror handler to show a placeholder if the image fails to load
+      // External images are now proxied through /api/image-proxy on the backend
+      // (rewriteExternalImages in GET /api/emails/:id). If the proxy itself fails
+      // (dead/auth-gated URL), the backend's onerror shows a Spanish fallback.
+      // Add diagnostic logging to help identify failed image URLs for debugging.
       doc.querySelectorAll('img').forEach((img) => {
-        // Skip if already replaced or data URI
-        if (!img.getAttribute('src') || img.getAttribute('src').startsWith('data:')) return;
-        // Check if it looks like an external image URL (http/https)
         const src = img.getAttribute('src');
-        if (src.startsWith('http://') || src.startsWith('https://')) {
-          img.setAttribute('onerror', "this.onerror=null; this.outerHTML='<div class=\"email-image-blocked\"><span class=\"email-image-blocked-icon\">🚫</span><span class=\"email-image-blocked-text\">Image blocked: the external image could not be loaded. Webmail protection may have prevented access.</span></div>';");
-        } else if (src.startsWith('//')) {
-          // Protocol-relative URL
-          img.setAttribute('onerror', "this.onerror=null; this.outerHTML='<div class=\"email-image-blocked\"><span class=\"email-image-blocked-icon\">🚫</span><span class=\"email-image-blocked-text\">Image blocked: the external image could not be loaded. Webmail protection may have prevented access.</span></div>';");
-        }
+        // Skip src-less and data URIs
+        if (!src || src.startsWith('data:')) return;
+        // Skip local images (already handled by backend proxy/cid resolution)
+        if (!src.startsWith('http://') && !src.startsWith('https://')) return;
+        console.log('[sanitizeHtml] external image found (should be proxied):', src.slice(0, 100));
       });
 
       return doc.body.innerHTML || '';
@@ -808,6 +821,23 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
     );
   }
 
+  function handleComposeEmail() {
+    setIsComposeOpen(true);
+  }
+
+  async function handleSendEmail(formData) {
+    // CRITICAL BUG FIX: Use the real email address from credentials, NOT a department label
+    const payload = {
+      user: credentials.user, // Must be the real email (e.g., admin@netlatin.com.ar)
+      password: credentials.password,
+      to: formData.to,
+      cc: formData.cc,
+      subject: formData.subject,
+      body: formData.body, // HTML from React-Quill
+    };
+    await sendEmail(credentials, payload);
+  }
+
   return (
     <div className="dashboard">
       {/* Sticky header bar */}
@@ -849,6 +879,9 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
             disabled={fetchLoading}
           >
             {fetchLoading ? 'Fetching...' : 'Fetch emails'}
+          </button>
+          <button className="compose-btn" onClick={handleComposeEmail}>
+            ✉️ Redactar
           </button>
           <span className="date-range-label">
             📅 Correos de {dateRangeLabel}
@@ -948,6 +981,25 @@ export default function DashboardPage({ credentials, account, onDisconnect, show
           onClose={closeRefreshNotif}
         />
       )}
+
+      {/* Compose email modal */}
+      <ComposeModal
+        isOpen={isComposeOpen}
+        onClose={() => setIsComposeOpen(false)}
+        onSend={handleSendEmail}
+        onSent={async () => {
+          console.log('[onSent] send confirmed, switching to Enviados filter');
+          setFilterClass('enviado');
+          try {
+            const data = await getEmails('enviado', accountId);
+            console.log('[onSent] enviado emails loaded:', data.length);
+            setEmails(data);
+            await loadCounts();
+          } catch (err) {
+            console.error('[onSent] failed to reload emails:', err.message);
+          }
+        }}
+      />
     </div>
   );
 }

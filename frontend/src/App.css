@@ -1010,3 +1010,268 @@ strong { font-weight: 600; }
   border-radius: 8px;
   margin-bottom: 10px;
 }
+
+
+.compose-btn {
+  background: rgba(89, 195, 195, 0.1);
+  border: 1px solid rgba(89, 195, 195, 0.3);
+  color: var(--accent, #59c3c3);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  margin-left: 8px;
+  transition: background 0.15s;
+}
+.compose-btn:hover {
+  background: rgba(89, 195, 195, 0.18);
+}
+
+/* ===== COMPOSE MODAL ===== */
+.compose-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeInOverlay 0.15s ease;
+}
+@keyframes fadeInOverlay {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.compose-modal {
+  width: 100%;
+  max-width: 760px;
+  max-height: 90vh;
+  background: var(--surf, #16191f);
+  border: 1px solid var(--border, #2c3140);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slideUpModal 0.2s ease;
+}
+@keyframes slideUpModal {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.compose-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border, #2c3140);
+  flex-shrink: 0;
+}
+.compose-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text, #dde3ee);
+  margin: 0;
+}
+.compose-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted, #7c889e);
+  font-size: 22px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.compose-close-btn:hover {
+  color: var(--text, #dde3ee);
+}
+.compose-close-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.compose-form {
+  padding: 20px 24px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  flex: 1;
+}
+.compose-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.compose-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted, #7c889e);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.compose-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--surf2, #1d2129);
+  border: 1px solid var(--border, #2c3140);
+  border-radius: 8px;
+  color: var(--text, #dde3ee);
+  font: 14px/1.4 inherit;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.compose-input:focus {
+  border-color: var(--accent, #4db8b8);
+  box-shadow: 0 0 0 3px rgba(77, 184, 184, 0.12);
+}
+.compose-input::placeholder {
+  color: var(--muted, #7c889e);
+}
+.compose-input:disabled {
+  opacity: 0.6;
+}
+.compose-divider {
+  height: 1px;
+  background: var(--border, #2c3140);
+  margin: 2px 0;
+}
+.compose-field-body {
+  flex: 1;
+  min-height: 200px;
+}
+.compose-error {
+  padding: 10px 14px;
+  background: rgba(240, 80, 80, 0.1);
+  border: 1px solid rgba(240, 80, 80, 0.25);
+  border-radius: 8px;
+  color: var(--spam, #f05050);
+  font-size: 13px;
+}
+.compose-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+}
+.compose-sent-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 20px;
+  color: #43d17a;
+  font-size: 16px;
+  font-weight: 500;
+}
+.compose-sent-icon {
+  font-size: 40px;
+}
+
+/* ===== REACT-QUILL DARK THEME ===== */
+.ql-snow.ql-toolbar {
+  background: var(--surf3, #232830);
+  border: 1px solid var(--border, #2c3140);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  font-family: inherit;
+}
+.ql-snow .ql-stroke {
+  stroke: var(--muted, #7c889e);
+}
+.ql-snow .ql-fill {
+  fill: var(--muted, #7c889e);
+}
+.ql-snow .ql-picker {
+  color: var(--text, #dde3ee);
+}
+.ql-snow .ql-picker-options {
+  background: var(--surf3, #232830);
+  border: 1px solid var(--border, #2c3140);
+}
+.ql-snow .ql-picker.ql-expanded .ql-picker-label {
+  border-color: var(--border, #2c3140);
+  color: var(--text, #dde3ee);
+}
+.ql-snow .ql-picker.ql-expanded .ql-picker-options {
+  border-color: var(--border, #2c3140);
+}
+.ql-snow.ql-toolbar button:hover .ql-stroke,
+.ql-snow .ql-picker-label:hover .ql-stroke {
+  stroke: var(--accent, #4db8b8);
+}
+.ql-snow.ql-toolbar button:hover .ql-fill,
+.ql-snow .ql-picker-label:hover .ql-fill {
+  fill: var(--accent, #4db8b8);
+}
+.ql-snow.ql-toolbar button:hover,
+.ql-snow .ql-picker-label:hover {
+  color: var(--accent, #4db8b8);
+}
+.ql-snow.ql-toolbar button.ql-active .ql-stroke {
+  stroke: var(--accent, #4db8b8);
+}
+.ql-snow.ql-toolbar button.ql-active .ql-fill {
+  fill: var(--accent, #4db8b8);
+}
+.ql-snow.ql-toolbar button.ql-active {
+  color: var(--accent, #4db8b8);
+}
+.ql-snow .ql-picker-item.ql-selected {
+  color: var(--accent, #4db8b8);
+}
+.ql-snow .ql-picker-item:hover {
+  color: var(--accent, #4db8b8);
+}
+.ql-snow .ql-picker-item.ql-selected .ql-stroke {
+  stroke: var(--accent, #4db8b8);
+}
+.ql-snow .ql-picker-item:hover .ql-stroke {
+  stroke: var(--accent, #4db8b8);
+}
+
+.ql-container.ql-snow {
+  background: var(--surf2, #1d2129);
+  border: 1px solid var(--border, #2c3140);
+  border-top: none;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text, #dde3ee);
+  min-height: 180px;
+}
+.ql-editor {
+  color: var(--text, #dde3ee);
+  min-height: 160px;
+}
+.ql-editor::placeholder {
+  color: var(--muted, #7c889e);
+}
+.ql-editor.ql-blank::before {
+  color: var(--muted, #7c889e);
+  font-style: normal;
+}
+.ql-editor a {
+  color: var(--accent, #4db8b8);
+}
+.ql-editor blockquote {
+  border-left-color: var(--border2, #363d4e);
+  color: var(--muted, #7c889e);
+}
+.ql-snow .ql-color-picker .ql-picker-options,
+.ql-snow .ql-background-picker .ql-picker-options {
+  background: var(--surf3, #232830);
+  border-color: var(--border, #2c3140);
+}
+.ql-snow .ql-color-picker .ql-picker-item,
+.ql-snow .ql-background-picker .ql-picker-item {
+  border-color: var(--border, #2c3140);
+}
