@@ -25,11 +25,12 @@ function logEvent(eventType, accountEmail, ipAddress, success, details = '') {
 
 /**
  * Check whether an account is locked out due to repeated failed attempts.
- * Returns true if there are 5+ failed connect_attempt events for this email
- * within the last 15 minutes.
+ * In production: locks after 5 failed attempts in 15 minutes.
+ * In development: locks after 100 failed attempts (essentially disabled).
  */
 function isAccountLocked(email) {
   if (!email) return false
+  const threshold = process.env.NODE_ENV === 'production' ? 5 : 100
   const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString()
   const failures = db.prepare(`
     SELECT COUNT(*) as count FROM audit_log
@@ -38,7 +39,23 @@ function isAccountLocked(email) {
     AND success = 0
     AND created_at > ?
   `).get(email, fifteenMinAgo)
-  return failures.count >= 5
+  return failures.count >= threshold
 }
 
-module.exports = { logEvent, isAccountLocked }
+/**
+ * Clear all failed login attempts for a given email (dev helper).
+ * Safe to call in API routes; only works in non-production.
+ */
+function clearAccountLock(email) {
+  if (process.env.NODE_ENV === 'production') return false
+  if (!email) return false
+  db.prepare(`
+    DELETE FROM audit_log
+    WHERE event_type = 'connect_attempt'
+    AND account_email = ?
+    AND success = 0
+  `).run(email)
+  return true
+}
+
+module.exports = { logEvent, isAccountLocked, clearAccountLock }

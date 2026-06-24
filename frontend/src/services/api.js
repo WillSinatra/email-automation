@@ -1,4 +1,7 @@
-const BASE = 'http://localhost:3001';
+// Empty string = relative URLs so requests go through Vite's dev proxy (port 5173),
+// which forwards /api/* to the backend. This avoids CORS issues entirely in dev.
+// In production, set this to your production API URL via an env var if needed.
+const BASE = '';
 const REQUEST_TIMEOUT_MS = 300000;
 
 function countEncodingArtifacts(value) {
@@ -208,3 +211,11 @@ export const updateDepartment = (id, name, label, keywords, description) =>
 
 export const deleteDepartment = (id) =>
   request('DELETE', `/api/departments/${id}`);
+
+export const sendEmail = (credentials, emailData) =>
+  request('POST', '/api/send-email', {
+    user: credentials.user,
+    password: credentials.password,
+    account_id: credentials.account_id,
+    ...emailData
+  })
